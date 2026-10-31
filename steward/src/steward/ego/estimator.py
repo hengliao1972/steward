@@ -32,6 +32,28 @@ SELF_ID = "e:self"
 
 
 @dataclass
+class Appearance:
+    """What the top face of an object looked like: colours on a fixed grid of cells in the object's
+    frame (column = +x, row 0 = +y), each from the latest view that saw it. ``stale`` once the object
+    was put down again (it may have been turned over): the next view replaces the whole face."""
+
+    rgb: np.ndarray  # (rows, cols, 3), NaN where no view has seen the cell
+    size: tuple[float, float]  # the object's extent along x and y when the grid was laid out
+    stamp: float  # world time of the latest view
+    stale: bool = False
+
+    @property
+    def coverage(self) -> float:
+        return float(np.isfinite(self.rgb[..., 0]).mean())
+
+    @property
+    def spread(self) -> float:
+        """Colour standard deviation of the seen cells; near 0 the face is plain."""
+        seen = self.rgb[np.isfinite(self.rgb[..., 0])]
+        return float(seen.std()) if len(seen) else 0.0
+
+
+@dataclass
 class Track:
     id: str
     category_counts: dict[str, float]
@@ -53,14 +75,29 @@ class Track:
     mean_rgb: np.ndarray | None = None  # running mean colour of its regions (RGB-D mode)
     mean_invalid: float = 0.0  # running mean share of its pixels without depth
     bottom_seen: bool = False  # some view showed its base (not cut by the image edge or hidden)
+    label: str | None = None  # a category named by the robot's agent; it outranks the classifier
+    annotated_affordances: list[str] | None = None  # affordances named with it, in place of the category prior
+    held_yaw: float = 0.0  # while held: its heading relative to the base heading plus the wrist yaw
     absent_views: list[tuple[float, float, float, float]] = field(default_factory=list)
     # (t, camera x, camera y, camera yaw) of views that saw through its place since it was last observed
     recent: collections.deque = field(default_factory=lambda: collections.deque(maxlen=RECENT_VIEWS))
     # (centre, size) of its latest single-view measurements, for the robust box of small objects
+    appearance: Appearance | None = None
 
     @property
     def category(self) -> str:
+        return self.label or self.perceived_category
+
+    @property
+    def perceived_category(self) -> str:
+        """The category perception accumulated, regardless of a label: what detections of the same
+        object will keep reporting, so association compares with it."""
         return max(self.category_counts, key=self.category_counts.get)
+
+    @property
+    def affordances(self) -> list[str]:
+        return list(self.annotated_affordances) if self.annotated_affordances is not None \
+            else list(prior(self.category)["affordances"])
 
     @property
     def color(self) -> str | None:
@@ -153,8 +190,11 @@ class EgoEstimator:
         o = self.odometry
         return {"p": [o["x"], o["y"], 0.0], "q": quat_from_yaw(o["yaw"])}
 
-    def camera_pose(self) -> dict:
-        return pose_compose(pose_compose(self.base_pose(), self._head_mount), self._camera["mount"])
+    def camera_pose(self, odometry: dict | None = None) -> dict:
+        """World pose of the head camera mount (looks along +x), at the current odometry or a given one."""
+        o = odometry or self.odometry
+        base = {"p": [o["x"], o["y"], 0.0], "q": quat_from_yaw(o["yaw"])}
+        return pose_compose(pose_compose(base, self._head_mount), self._camera["mount"])
 
     def gripper_position(self) -> np.ndarray:
         """Gripper position from the robot's own kinematics (base, lift, reach)."""
@@ -183,14 +223,23 @@ class EgoEstimator:
             rng = float(det.get("range", np.linalg.norm(det["pose"]["p"])))
             sigma = self.config.pos_sigma_base + self.config.pos_sigma_per_m * rng
             measurements.append((det, np.asarray(world["p"]), yaw_from_quat(world["q"]), sigma))
+        # Global nearest-first assignment: of all detection-track pairs within the gate, the closest
+        # pair is joined first, so of two objects side by side neither takes the other's track.
+        pairs = []
+        for k, (det, pos, _yaw, sigma) in enumerate(measurements):
+            for track in self._candidates(det["category"], pos, sigma, float(max(det["size"][0], det["size"][1]))):
+                pairs.append((float(np.linalg.norm(track.pos - pos)), k, track.id))
         matched: set[str] = set()
-        for det, pos, yaw, sigma in sorted(measurements, key=lambda m: m[3]):
-            track = self._associate(det["category"], pos, sigma, matched, float(max(det["size"][0], det["size"][1])))
-            if track is None:
-                track = self._new_track(det, pos, yaw, sigma)
+        assigned: dict[int, str] = {}
+        for _d, k, tid in sorted(pairs):
+            if k not in assigned and tid not in matched:
+                assigned[k] = tid
+                matched.add(tid)
+        for k, (det, pos, yaw, sigma) in sorted(enumerate(measurements), key=lambda item: item[1][3]):
+            if k in assigned:
+                self._fuse(self.tracks[assigned[k]], det, pos, yaw, sigma)
             else:
-                self._fuse(track, det, pos, yaw, sigma)
-            matched.add(track.id)
+                matched.add(self._new_track(det, pos, yaw, sigma).id)
         self._decay_unseen(cam, matched)
         self._merge_duplicates()
         self._follow_held()
@@ -223,7 +272,7 @@ class EgoEstimator:
         for i, m in enumerate(measurements):
             # What the robot is carrying moves with it: a region at the load belongs to the load,
             # never to a neighbour it is carried past.
-            at_load = held is not None and float(np.linalg.norm(held.pos - m["centre"])) < 0.15
+            at_load = held is not None and float(np.linalg.norm(held.pos - m["centre"])) < max(0.15, 0.6 * held.footprint)
             for track in self.tracks.values():
                 if at_load and track is not held:
                     continue
@@ -250,6 +299,9 @@ class EgoEstimator:
                     continue  # partial views only shrink a well-seen object; a much larger region is something else
                 if not track.held and not part_of_large and self._contradicts(track, m):
                     continue
+                if not track.held and _stacked(track.bottom(), track.top(), m_bottom, m_top, m["centre"][2],
+                                               m["seg"].bottom_seen and track.bottom_seen):
+                    continue  # a lid on a box, a book on a book: one rests on the other
                 wall_like = m["probs"].get("wall", 0.0) > 0.5 or m_top >= self.config.wall_like_top or m["concave"]
                 if (track.category == "wall") != wall_like and (track.footprint > 0.3 or m["footprint"] > 0.3):
                     continue  # walls only join walls
@@ -429,8 +481,7 @@ class EgoEstimator:
                     continue
                 if float(np.linalg.norm(a.pos - b.pos)) > 0.5 * max(a.footprint, b.footprint) + 0.05:
                     continue
-                receptacles = "receptacle" in prior(a.category)["affordances"] and \
-                    "receptacle" in prior(b.category)["affordances"]
+                receptacles = "receptacle" in a.affordances and "receptacle" in b.affordances
                 if receptacles and not self._size_match(a.footprint, b.footprint):
                     continue  # a smaller bowl nested in a larger one
                 shared = {tuple(v) for v in a.voxels} & {tuple(v) for v in b.voxels}
@@ -495,6 +546,9 @@ class EgoEstimator:
                 if small.id == big.id or small.held or small.footprint >= big.footprint:
                     continue
                 if not _inside(big, small.pos, 0.1) or abs(small.bottom() - big.bottom()) > 0.15:
+                    continue
+                if _stacked(big.bottom(), big.top(), small.bottom(), small.top(), float(small.pos[2]),
+                            big.bottom_seen and small.bottom_seen):
                     continue
                 if small.footprint < 0.3 and small.bottom() > 0.05:
                     continue  # tableware on furniture is not part of it
@@ -568,7 +622,7 @@ class EgoEstimator:
         for other in self.tracks.values():
             if other.id == drawer.id or other.footprint < 0.4 or other.bottom() > 0.1:
                 continue
-            if "support-surface" in prior(other.category)["affordances"] and _inside(other, drawer.pos, 0.1):
+            if "support-surface" in other.affordances and _inside(other, drawer.pos, 0.1):
                 if best is None or other.observations > best.observations:
                     best = other
         return best
@@ -580,7 +634,7 @@ class EgoEstimator:
         for other in self.tracks.values():
             if other.id == track.id or other.held or not _inside(other, centre, 0.0):
                 continue
-            affordances = prior(other.category)["affordances"]
+            affordances = other.affordances
             levels = []
             if "support-surface" in affordances:
                 levels.append(other.top())
@@ -612,9 +666,8 @@ class EgoEstimator:
             # A drawer slides square to its furniture: take the furniture's (well-observed) heading.
             k = round(wrap_angle(yaw - parent.yaw) / (math.pi / 2))
             centre, size, yaw = box_at_yaw(_points(track.voxels), parent.yaw + k * math.pi / 2)
-        if track.observations > 1 and abs(wrap_angle(yaw - track.yaw)) > math.pi / 2:
-            # A box is the same turned half way round; keep the heading continuous between views.
-            yaw = wrap_angle(yaw + math.pi)
+        if track.observations > 1:
+            yaw, size = _continuous_heading(yaw, size, track.yaw)
         if track.mean_rgb is not None:
             # The accumulated box is the best evidence of what the object is: classify it again,
             # with confidence growing with the number of views behind it.
@@ -686,18 +739,17 @@ class EgoEstimator:
         """Footprints of the same object agree within the detector's size noise; nested bowls do not."""
         return abs(math.log(max(a, 1e-3) / max(b, 1e-3))) <= self.config.size_match_log
 
-    def _associate(self, category: str, pos: np.ndarray, sigma: float, taken: set[str],
-                   footprint: float | None = None) -> Track | None:
-        best, best_d = None, None
+    def _candidates(self, category: str, pos: np.ndarray, sigma: float, footprint: float | None = None) -> list[Track]:
+        """Tracks a detection may belong to: a compatible category, a matching size and within the gate."""
+        out = []
         for track in self.tracks.values():
-            if track.id in taken or not compatible(category, track.category):
+            if not compatible(category, track.perceived_category):
                 continue
             if footprint is not None and not track.held and not self._size_match(footprint, track.footprint):
                 continue
-            d = float(np.linalg.norm(track.pos - pos))
-            if d <= self._gate(track, sigma) and (best_d is None or d < best_d):
-                best, best_d = track, d
-        return best
+            if float(np.linalg.norm(track.pos - pos)) <= self._gate(track, sigma):
+                out.append(track)
+        return out
 
     def _merge_duplicates(self) -> None:
         """Merge compatible tracks whose centres lie inside each other's uncertainty-expanded
@@ -709,7 +761,7 @@ class EgoEstimator:
                 continue
             for drop_id in ids[i + 1:]:
                 drop = self.tracks.get(drop_id)
-                if drop is None or drop.held or not compatible(drop.category, keep.category):
+                if drop is None or drop.held or not compatible(drop.perceived_category, keep.perceived_category):
                     continue
                 if not self._size_match(drop.footprint, keep.footprint):
                     continue
@@ -718,6 +770,9 @@ class EgoEstimator:
                     continue
                 if not (_inside(keep, drop.pos, 3.0 * keep.sigma) or _inside(drop, keep.pos, 3.0 * drop.sigma)):
                     continue
+                if _flat_pair(keep, drop) and float(np.linalg.norm(drop.pos[:2] - keep.pos[:2])) > FLAT_PAIR_OVERLAP_M * min(
+                        min(keep.size[0], keep.size[1]), min(drop.size[0], drop.size[1])):
+                    continue  # two flat pieces edge to edge, not one seen twice
                 w_keep, w_drop = 1.0 / keep.var, 1.0 / drop.var
                 keep.pos = (keep.pos * w_keep + drop.pos * w_drop) / (w_keep + w_drop)
                 keep.var = 1.0 / (w_keep + w_drop)
@@ -762,6 +817,8 @@ class EgoEstimator:
         gain = prior_var / (prior_var + r)
         track.pos = track.pos + gain * (pos - track.pos)
         track.var = (1.0 - gain) * prior_var
+        if abs(wrap_angle(yaw - track.yaw)) > YAW_MOVED:
+            track.yaw_var = max(track.yaw_var, YAW_MOVED**2)  # it was turned (tipped out, put down): follow the views
         k_yaw = track.yaw_var / (track.yaw_var + 0.05**2)
         track.yaw = wrap_angle(track.yaw + k_yaw * wrap_angle(yaw - track.yaw))
         track.yaw_var = (1.0 - k_yaw) * track.yaw_var
@@ -795,27 +852,73 @@ class EgoEstimator:
         self.version += 1
 
     # ---------------------------------------------------------------- holding
-    def mark_held(self, track_id: str) -> None:
+    def mark_held(self, track_id: str) -> str:
+        """The gripper closed on ``track_id``: carry that track with it from now on. If the track was
+        merged into another while the robot approached, the track nearest the gripper (within
+        ``HELD_FALLBACK_M``) is the one it holds.
+
+        :returns: the id of the held track.
+        :raises KeyError: no track is near the gripper."""
+        if track_id not in self.tracks:
+            grip = self.gripper_position()
+            near = min(self.tracks.values(), key=lambda t: float(np.linalg.norm(t.pos - grip)), default=None)
+            if near is None or float(np.linalg.norm(near.pos - grip)) > HELD_FALLBACK_M:
+                raise KeyError(f"{track_id} is no longer in the ego state and nothing else is in the gripper")
+            track_id = near.id
         track = self.tracks[track_id]
         track.held = True
         track.held_offset = track.pos - self.gripper_position()
+        track.held_yaw = wrap_angle(track.yaw - self.odometry["yaw"] - self.joints.get("wrist_yaw", 0.0))
         track.recent.clear()  # it will be put down elsewhere
         self.held_id = track_id
+        return track_id
+
+    def remember_face(self, track_id: str, rgb: np.ndarray, stamp: float) -> Appearance | None:
+        """Keep one view of a track's top face, sampled on its appearance grid (see
+        :meth:`face_grid`): seen cells replace the remembered ones; a stale appearance, or one laid
+        out for a clearly different extent, is replaced whole.
+
+        :returns: the track's appearance, or None when the track is gone or held."""
+        track = self.tracks.get(track_id)
+        if track is None or track.held:
+            return None
+        known = track.appearance
+        if known is None or known.stale or known.rgb.shape != rgb.shape:
+            track.appearance = Appearance(rgb.copy(), (float(track.size[0]), float(track.size[1])), stamp)
+            return track.appearance
+        seen = np.isfinite(rgb[..., 0])
+        known.rgb[seen] = rgb[seen]
+        known.stamp = stamp
+        return known
+
+    def face_grid(self, track: Track, cell: float) -> tuple[int, int]:
+        """Columns and rows of a track's appearance grid: kept from its appearance while the track's
+        extent stays within :data:`APPEARANCE_SIZE_CHANGE` of the extent it was laid out for, else
+        ``cell``-sized cells over the current extent."""
+        known = track.appearance
+        if known is not None and not known.stale and all(
+                abs(float(track.size[k]) - known.size[k]) <= APPEARANCE_SIZE_CHANGE * known.size[k] for k in (0, 1)):
+            return known.rgb.shape[1], known.rgb.shape[0]
+        return max(1, round(float(track.size[0]) / cell)), max(1, round(float(track.size[1]) / cell))
 
     def _clear_held(self) -> None:
         if self.held_id and self.held_id in self.tracks:
             track = self.tracks[self.held_id]
+            if track.appearance is not None:
+                track.appearance.stale = True  # it may have been put down turned over
             track.held = False
             track.held_offset = None
             track.voxels = None
             track.settled = False  # it drops a little when released; the next view places it
             track.var = np.maximum(track.var, 0.02**2)
+            track.yaw_var = max(track.yaw_var, YAW_MOVED**2)
         self.held_id = None
 
     def _follow_held(self) -> None:
         if self.held_id and self.held_id in self.tracks:
             track = self.tracks[self.held_id]
             track.pos = self.gripper_position() + track.held_offset
+            track.yaw = wrap_angle(self.odometry["yaw"] + self.joints.get("wrist_yaw", 0.0) + track.held_yaw)
 
     # ------------------------------------------------------------------ output
     def support_of(self, track: Track) -> Track | None:
@@ -825,7 +928,7 @@ class EgoEstimator:
         for other in self.tracks.values():
             if other.id == track.id or other.held:
                 continue
-            affordances = prior(other.category)["affordances"]
+            affordances = other.affordances
             z_tol = max(0.06, 2.5 * _sigma_z(track, other))
             local = _to_local_xy(other, track.pos)
             if "receptacle" in affordances and track.footprint < other.footprint:
@@ -852,7 +955,7 @@ class EgoEstimator:
     def drawer_opening(self, drawer: Track) -> float:
         """How far a drawer sticks out of the furniture holding it, along the drawer's front axis."""
         furniture = [_box2d(t) for t in self.tracks.values()
-                     if t.id != drawer.id and "support-surface" in prior(t.category)["affordances"]]
+                     if t.id != drawer.id and "support-surface" in t.affordances]
         return protrusion(self.front(drawer), furniture)
 
     def front(self, track: Track) -> Box2D:
@@ -905,10 +1008,23 @@ class EgoEstimator:
         ent.state_vars["holding"] = Est(value=self.gripper.get("holding", False), t=self.stamp, src="observed")
         return ent
 
+    def annotate(self, track_id: str, label: str | None = None, affordances: list[str] | None = None) -> None:
+        """Name a track as the robot's agent has identified it: ``label`` becomes its category and
+        ``affordances`` replace the category prior's; ``None`` keeps the current value.
+
+        :raises KeyError: no such track."""
+        track = self.tracks[track_id]
+        if label is not None:
+            track.label = label
+        if affordances is not None:
+            track.annotated_affordances = list(affordances)
+        self.version += 1
+
     def _track_entity(self, track: Track) -> Entity:
         p = prior(track.category)
         total = sum(track.category_counts.values())
-        cat_unc = {"kind": "categorical", "p": {k: round(v / total, 4) for k, v in track.category_counts.items()}}
+        cat_unc = {"kind": "categorical", "p": {track.label: 1.0} if track.label else
+                   {k: round(v / total, 4) for k, v in track.category_counts.items()}}
         src = "fused" if track.observations > 1 else "observed"
         inflate = 0.0 if track.held else 2.0 * track.sigma
         size = [float(track.size[0] + inflate), float(track.size[1] + inflate), float(track.size[2])]
@@ -916,7 +1032,8 @@ class EgoEstimator:
             id="body", name=track.category,
             geometry={"collision": [primitive("box", size)]},
             material=Est(value={"fragility": p["fragility"]}, src="prior"),
-            affordances=[Est(value=a, src="prior") for a in p["affordances"]],
+            affordances=[Est(value=a, src="prior" if track.annotated_affordances is None else "inferred")
+                         for a in track.affordances],
         )
         root_value = max(p["root"], key=p["root"].get)
         return Entity(
@@ -965,12 +1082,17 @@ def color_name(rgb: np.ndarray, invalid_frac: float = 0.0) -> str:
 
 VOXEL = 0.01
 ESTABLISHED_VIEWS = 5
+HELD_FALLBACK_M = 0.1
+YAW_MOVED = 0.3  # a detected heading this far off a track's means the object was turned
+STACK_TOL = 0.005  # a region this little below another's top face still rests on it
 IDENTIFIED_SHARE = 0.6
 HELD_LARGER = 2.0  # a region with a footprint this many times the held object's is not the held object
 CONVEX_CHECK_M = 0.8  # boxes longer than this are checked for being filled rather than an outline
 MIN_FOOTPRINT_FILL = 0.2
 SMALL_M = 0.3
 RECENT_VIEWS = 12
+APPEARANCE_SIZE_CHANGE = 0.2  # an extent this much off the one a face grid was laid out for starts a new grid
+SQUARE_SIDES = 0.9  # a footprint whose shorter side is at least this share of the longer is square
 
 
 def _voxelize(points: np.ndarray) -> np.ndarray:
@@ -998,6 +1120,16 @@ def _to_local_xy(track: Track, point: np.ndarray) -> tuple[float, float]:
     return (c * dx - s * dy, s * dx + c * dy)
 
 
+FLAT_PAIR_HEIGHT_SHARE = 0.2  # a track no taller than this share of its footprint is flat
+FLAT_PAIR_OVERLAP_M = 0.5  # flat pieces whose centres are closer than this share of the smaller side may be one
+
+
+def _flat_pair(a: Track, b: Track) -> bool:
+    """Both tracks are flat (much wider than tall): two of them side by side are two objects, and the
+    duplicate-merge must not fold one into the other."""
+    return all(t.size[2] <= FLAT_PAIR_HEIGHT_SHARE * float(max(t.size[0], t.size[1])) for t in (a, b))
+
+
 def _sigma_z(a: Track, b: Track) -> float:
     """Standard deviation of the height difference between two tracks."""
     return math.sqrt(float(a.var[2] + b.var[2]))
@@ -1006,6 +1138,16 @@ def _sigma_z(a: Track, b: Track) -> float:
 CONCAVE_MIN_M = 0.5
 SEE_THROUGH_DEG = 5.0
 SEE_THROUGH_M = 0.15
+
+
+def _stacked(a_bottom: float, a_top: float, b_bottom: float, b_top: float, b_centre: float, bases_seen: bool) -> bool:
+    """Whether box b rests on top of box a, or a on b, rather than being a view of the same object:
+    with both bases seen, one lies wholly above the other's top face."""
+    if not bases_seen:
+        return False
+    on_a = b_centre > a_top and b_bottom >= a_top - STACK_TOL
+    under_a = b_top <= a_bottom + STACK_TOL and a_bottom > b_centre
+    return on_a or under_a
 
 
 def _identified(track: Track) -> bool:
@@ -1033,6 +1175,21 @@ def _concave(points: np.ndarray, centre: np.ndarray, footprint: float, cam_p: np
     bearing = np.minimum(bearing, 360.0 - bearing)
     along = np.linalg.norm(rel[bearing <= SEE_THROUGH_DEG], axis=1)
     return len(along) >= 5 and float(np.median(along)) > middle + SEE_THROUGH_M
+
+
+def _continuous_heading(yaw: float, size: np.ndarray, previous: float) -> tuple[float, np.ndarray]:
+    """The heading among a fitted box's equivalent ones nearest ``previous``, with its extents.
+
+    A box fits the same points turned half way round; a square footprint (sides within
+    :data:`SQUARE_SIDES`) also turned a quarter, where the fit's x (its longer side) swaps with
+    noise. Staying nearest the previous heading keeps an object's frame, and the faces reported in
+    it, fixed to the object between views; a quarter turn swaps the x and y extents."""
+    square = min(size[0], size[1]) >= SQUARE_SIDES * max(size[0], size[1])
+    step = math.pi / 2 if square else math.pi
+    turns = round(wrap_angle(previous - yaw) / step)
+    if square and turns % 2:
+        size = size[[1, 0, 2]]
+    return wrap_angle(yaw + turns * step), size
 
 
 def _footprint_fill(points: np.ndarray, centre: np.ndarray, size: np.ndarray, yaw: float, cell: float = 0.05) -> float:

@@ -72,12 +72,16 @@ def primitive(
     size: list[float],
     at: dict | None = None,
     rgba: list[float] | None = None,
+    texture: str | None = None,
 ) -> dict:
     """Primitive geometry. ``size`` uses full extents: box [x, y, z]; sphere [r];
-    cylinder/capsule [r, length]; plane [x, y]; ellipsoid [x, y, z]."""
+    cylinder/capsule [r, length]; plane [x, y]; ellipsoid [x, y, z]. ``texture`` is a base64 PNG
+    drawn on a box's top face (+z), the rest of the box keeps ``rgba``."""
     g = {"kind": "primitive", "shape": shape, "size": [float(s) for s in size], "pose": at or pose()}
     if rgba is not None:
         g["rgba"] = [float(c) for c in rgba]
+    if texture is not None:
+        g["texture"] = texture
     return g
 
 

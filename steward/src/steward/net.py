@@ -93,7 +93,11 @@ class JsonServer:
                     self._send(200, result if result is not None else {})
 
             def _send(self, status: int, payload: Any) -> None:
-                data = json.dumps(payload).encode()
+                try:
+                    data = json.dumps(payload, allow_nan=False).encode()
+                except ValueError as exc:
+                    # JSON has no NaN or Infinity: a result holding one is a server fault, reported as JSON.
+                    status, data = 500, json.dumps({"error": f"result is not representable as JSON: {exc}"}).encode()
                 self.send_response(status)
                 self.send_header("Content-Type", "application/json")
                 self.send_header("Content-Length", str(len(data)))

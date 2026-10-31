@@ -2,7 +2,7 @@
   "name": "@steward/dsh-bundle-ego",
   "version": "0.0.1",
   "private": true,
-  "description": "Ego Harness bundle: ctx.ego over the robot's Ego API, robot tools and the robot safety policy.",
+  "description": "Ego Harness bundle: ctx.ego over the robot's Ego API, robot tools run from programs (PTC), the robot's capability library and the robot safety policy.",
   "type": "module",
   "files": ["cordis.patch.yml"],
   "dsh": { "bundle": { "patch": "./cordis.patch.yml" } },
@@ -10,6 +10,7 @@
   "dependencies": {
     "@steward/dsh-ego-runtime-client": "workspace:*",
     "@steward/dsh-robot-safety": "workspace:*",
-    "@steward/dsh-tool-ego": "workspace:*"
+    "@steward/dsh-tool-ego": "workspace:*",
+    "@steward/dsh-tool-ego-capabilities": "workspace:*"
   }
 }

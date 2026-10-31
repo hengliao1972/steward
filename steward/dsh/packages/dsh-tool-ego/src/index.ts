@@ -29,7 +29,7 @@ function text(value: unknown): [{ type: 'text'; text: string }] {
 function receiptView(r: PredictionReceipt): JsonObject {
   const plan = r.plan as Record<string, unknown>
   const brief: JsonObject = {}
-  for (const key of ['target', 'object', 'support', 'spot', 'dock', 'reach', 'lift', 'pathLength']) {
+  for (const key of ['target', 'object', 'support', 'spot', 'dock', 'reach', 'lift', 'pathLength', 'wristYaw', 'roll']) {
     if (key in plan) brief[key] = plan[key]
   }
   const view: JsonObject = {
@@ -56,7 +56,9 @@ export function egoTools(ego: EgoService): ToolDefinition[] {
       description: 'Read your current understanding of the world: your own position, what you are holding, the skill '
         + 'in progress, and every object you have perceived with its estimated position, position uncertainty in '
         + 'metres, size, what it rests on, and when you last saw it. Objects you have not seen are absent, and '
-        + 'positions are estimates.',
+        + 'positions are estimates. appearance says what you remember of an object\'s top face: how long ago you '
+        + 'saw it, the share seen, its colour spread (near 0: a plain face) and stale (put down since, look again); '
+        + 'ego_match_face compares remembered faces.',
       parameters: {},
       output: { schema: JSON_OUTPUT, render: (_a, v) => text(v) },
       async execute(_args, exec) {
@@ -105,11 +107,15 @@ export function egoTools(ego: EgoService): ToolDefinition[] {
       name: 'ego_predict',
       description: 'Predict the consequences of a skill before doing it. Returns a receipt with a risk score, the '
         + 'issues found (for example a target whose position is too uncertain to grasp reliably), and the planned '
-        + 'motion. Skills: "navigate" (needs x, y, optional yaw in radians), "pick" (needs target), "place" (needs '
-        + 'on: a surface, an open drawer to put the object into, or a larger bowl to nest a bowl in; optional offset '
-        + '[dx, dy] in metres in the surface frame; or at: [x, y] to put it down on the floor, optional yaw for its '
-        + 'final heading in radians), "open" / "close" (needs target: a drawer; the robot pulls or pushes its handle '
-        + 'and ends standing back so the inside is in view). Floor-standing objects such as chairs are picked from '
+        + 'motion. Skills: "navigate" (needs x, y, optional yaw in radians), "pick" (needs target; a pourable '
+        + 'container is picked with what lies in it once nothing lies on top of it), "place" (needs on: a surface, an '
+        + 'open drawer to put the object into, or a larger bowl to nest a bowl in; optional offset; or at: [x, y] to '
+        + 'put it down on the floor), "pour" (the held object must be pourable; needs on: a surface; tips it over the '
+        + 'spot so its contents slide out there in a heap, then holds it upright again, still in the gripper; the spot '
+        + 'keeps the contents\' slide from every edge so nothing falls off; count the contents before pouring, since '
+        + 'flat ones can land wholly hidden under one another), "open" / '
+        + '"close" (needs target: a drawer; the robot pulls or pushes its handle and ends standing back so the inside '
+        + 'is in view). Floor-standing objects such as chairs are picked from '
         + 'beside them, carried a few centimetres above the floor in front of the robot, and put down with at; '
         + 'while carrying them the robot needs more room to turn. Objects inside a drawer are only seen while it is '
         + 'open. If the risk is too high or the skill is infeasible, follow the issues (for example move closer and '
@@ -118,22 +124,93 @@ export function egoTools(ego: EgoService): ToolDefinition[] {
         + '(pick it, place it at a parking spot), then predict the original skill again. A receipt can be run once '
         + 'and expires.',
       parameters: {
-        skill: { type: 'string', enum: ['navigate', 'pick', 'place', 'open', 'close'], required: true, description: 'Skill to predict.' },
+        skill: { type: 'string', enum: ['navigate', 'pick', 'place', 'pour', 'open', 'close'], required: true, description: 'Skill to predict.' },
         target: { type: 'string', description: 'pick: id of the object to grasp; open/close: id of the drawer.' },
-        on: { type: 'string', description: 'place: id of the surface, open drawer or larger bowl to put the held object on or in.' },
-        offset: { type: 'array', items: { type: 'number' }, description: 'place: [dx, dy] on the surface, metres.' },
+        on: { type: 'string', description: 'place: id of the surface, open drawer or larger bowl to put the held object on or in; pour: id of the surface.' },
+        offset: { type: 'array', items: { type: 'number' }, description: 'place, pour: [dx, dy] of the spot from the surface centre in the surface frame, metres; without it the free spot nearest you. If something already lies at the requested spot, the free spot nearest it is used instead and the issues say where (the receipt plan.spot holds the spot used).' },
         at: { type: 'array', items: { type: 'number' }, description: 'place on the floor: [x, y] in metres.' },
         x: { type: 'number', description: 'navigate: goal x in metres.' },
         y: { type: 'number', description: 'navigate: goal y in metres.' },
-        yaw: { type: 'number', description: 'navigate: goal heading; place with at: final heading of the object (radians).' },
+        yaw: { type: 'number', description: 'navigate: goal heading; place: final heading of the object\'s frame (as ego_state yawDeg and ego_inspect report it), radians; the wrist turns it.' },
+        flip: { type: 'boolean', description: 'place: turn the held object upside down before setting it down.' },
+        clearance: { type: 'number', description: 'place, pour: least gap in metres kept to objects already on the surface (default 0.015). With an offset, 0 allows contact or overlap (interlocking pieces, stacking): the spot is used exactly as requested, never shifted aside.' },
       },
       output: { schema: JSON_OUTPUT, render: (_a, v) => text(v) },
       async execute(args, exec) {
         const params: JsonObject = {}
-        for (const key of ['target', 'on', 'offset', 'at', 'x', 'y', 'yaw'] as const) {
+        for (const key of ['target', 'on', 'offset', 'at', 'x', 'y', 'yaw', 'flip', 'clearance'] as const) {
           if (args[key] !== undefined) params[key] = args[key]
         }
         return json(receiptView(await ego.predict(args.skill, params, exec.signal)))
+      },
+    }),
+    defineTool({
+      name: 'ego_inspect',
+      description: 'Look closely at the top face of an object with one fresh camera frame: its colours on a px x px '
+        + 'grid. rows is in the object\'s own frame (row 0 is its +y edge, column 0 its -x edge, as seen from above '
+        + 'with its heading yawDeg). worldRows is the same face as seen from above with the map\'s +y up and +x to the '
+        + 'right: rows turned worldTurnDeg counter-clockwise (yawDeg rounded to a quarter turn), so faces of objects '
+        + 'lying at different headings compare directly in worldRows. Putting an object down with place yaw = its '
+        + 'current yawDeg + k x 90 degrees (given in radians) turns its face k quarter turns counter-clockwise as seen '
+        + 'from above. Each cell is [r, g, b] or null where the face is out of view or hidden. Stand within about '
+        + 'a metre with the object in front of you; low coverage means move closer and look again. Use it to compare '
+        + 'printed or patterned faces, read which side of a flat object is up, or tell similar objects apart. A '
+        + 'printed flat object lying with its plain back up shows an almost uniform face: turn it over (place with '
+        + 'flip) and look again. Flat objects lying on or against each other hide parts of their faces and can be '
+        + 'perceived as one object, and one lying on another can hide it wholly: set them apart on free space first, '
+        + 'looking again where each one lay after picking it up. The object frame stays fixed to the object between '
+        + 'views and while it is carried, so one inspection before picking it tells which place yaw turns its face '
+        + 'as you want.',
+      parameters: {
+        entity: { type: 'string', required: true, description: 'Id of the object to inspect.' },
+        px: { type: 'number', description: 'Grid size, 4 to 64 (default 24).' },
+      },
+      output: { schema: JSON_OUTPUT, render: (_a, v) => text(v) },
+      async execute(args, exec) {
+        return json(await ego.inspect(args.entity, args.px ?? 24, exec.signal))
+      },
+    }),
+    defineTool({
+      name: 'ego_match_face',
+      description: 'Find where the top faces of objects appear on the top face of a reference object printed at '
+        + 'the same scale (puzzle pieces on the picture of their box, tiles on a pattern sheet). It works from the '
+        + 'faces you remember: the robot remembers the top face of every object up to about 0.6 m that it sees '
+        + 'within 1.5 m (ego_state appearance says how much and how long ago), and refreshes the ones in view '
+        + 'first; a face put down since it was last seen must be looked at again. Match all objects of a task in '
+        + 'one call. For each it compares the colours of every placement and quarter turn and returns the best '
+        + 'few: offsetM is where the face centre belongs on the reference, in the reference frame from its centre; '
+        + 'turnDeg is how far the face must turn counter-clockwise to line up with the reference; placeYawDeg is '
+        + 'the heading (degrees; place takes radians) that lines it up with the reference as the reference lies '
+        + 'now. To build the picture elsewhere at heading H, put each object at centre + offsetM turned by H, with '
+        + 'place yaw = H + turnDeg. score is a correlation (1 = identical); a best score barely above the second is '
+        + 'ambiguous, so look closer and match again. offsetM is good to about one cell (cellM): when you know the '
+        + 'layout (for example a grid of equal pieces), snap it to the nearest slot. spread near 0 (under about 10) '
+        + 'means a plain face: the object probably lies with its back up. An entry with error says what to look at.',
+      parameters: {
+        entities: { type: 'array', items: { type: 'string' }, required: true, description: 'Ids of the objects whose faces are sought.' },
+        reference: { type: 'string', required: true, description: 'Id of the object showing the whole picture.' },
+        px: { type: 'number', description: 'Cells across each object\'s shorter side, 4 to 16 (default 12).' },
+      },
+      output: { schema: JSON_OUTPUT, render: (_a, v) => text(v) },
+      async execute(args, exec) {
+        return json(await ego.matchFace(args.entities as string[], args.reference, args.px ?? 12, exec.signal))
+      },
+    }),
+    defineTool({
+      name: 'ego_annotate',
+      description: 'Record what you have identified an object to be when the perceived category is wrong or unknown '
+        + '(for example "unknown" for a box or a puzzle piece). Your label replaces its category, and the affordances '
+        + 'you name replace the category\'s defaults, so prediction and planning treat it accordingly: graspable (can be '
+        + 'picked), support-surface (things can be put on it), receptacle (things can be put in it), container, '
+        + 'pourable (can be carried with its contents and poured), flat.',
+      parameters: {
+        entity: { type: 'string', required: true, description: 'Id of the object.' },
+        label: { type: 'string', description: 'Category name to use for it.' },
+        affordances: { type: 'array', items: { type: 'string' }, description: 'Its affordances, replacing the defaults.' },
+      },
+      output: { schema: JSON_OUTPUT, render: (_a, v) => text(v) },
+      async execute(args, exec) {
+        return json(await ego.annotate({ entity: args.entity, label: args.label, affordances: args.affordances }, exec.signal))
       },
     }),
     defineTool({

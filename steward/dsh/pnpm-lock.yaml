@@ -29,6 +29,9 @@ importers:
       '@steward/dsh-tool-ego':
         specifier: workspace:*
         version: link:packages/dsh-tool-ego
+      '@steward/dsh-tool-ego-capabilities':
+        specifier: workspace:*
+        version: link:packages/dsh-tool-ego-capabilities
       '@steward/dsh-tool-world':
         specifier: workspace:*
         version: link:packages/dsh-tool-world
@@ -50,6 +53,9 @@ importers:
       '@steward/dsh-tool-ego':
         specifier: workspace:*
         version: link:../dsh-tool-ego
+      '@steward/dsh-tool-ego-capabilities':
+        specifier: workspace:*
+        version: link:../dsh-tool-ego-capabilities
 
   packages/dsh-bundle-world:
     dependencies:
@@ -113,6 +119,21 @@ importers:
       '@deepseek-ai/dsh-tools':
         specifier: 0.2.1-rc.3
         version: 0.2.1-rc.3(216a232736cc22d421973382c4e97320)
+
+  packages/dsh-tool-ego-capabilities:
+    devDependencies:
+      '@deepseek-ai/cordis':
+        specifier: 4.0.5
+        version: 4.0.5(@deepseek-ai/cordis-plugin-include@1.0.10)(@deepseek-ai/cordis-plugin-loader@1.0.6)
+      '@deepseek-ai/dsh-tools':
+        specifier: 0.2.1-rc.3
+        version: 0.2.1-rc.3(216a232736cc22d421973382c4e97320)
+      '@deepseek-ai/schemastery':
+        specifier: 3.18.5
+        version: 3.18.5
+      '@types/node':
+        specifier: ^24.0.0
+        version: 24.19.2
 
   packages/dsh-tool-world:
     dependencies:

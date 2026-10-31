@@ -32,6 +32,7 @@ from steward.world.console import CONSOLE_HTML, console_state
 from steward.phases import DEFAULT_PHASE, phase_catalog, phase_modules
 from steward.world.chat import ChatConfig, HarnessChat
 from steward.viewloop import ViewLoop, ViewSettings, frame_response
+from steward.world.goals import evaluate as evaluate_goal
 from steward.world.sim import EditError, PerceptionConfig, WorldSim, speed_json
 from steward.world.world_view import WorldViewRenderer
 
@@ -87,6 +88,9 @@ class StewardHost:
     # --------------------------------------------------------------- episodes
     def load_episode(self, name: str) -> dict:
         scenario = self.authoring.load_scenario(name)
+        if scenario.get("phase"):
+            phase_modules(scenario["phase"])  # a scenario declares the level it was built for; unknown ones fail here
+            self.phase = scenario["phase"]
         if self.sim is not None:
             self.sim.stop()
         self.sim = WorldSim(scenario["sceneState"], speed=self.speed, seed=self.seed, freeze_idle=self.freeze_idle,
@@ -113,6 +117,15 @@ class StewardHost:
 
     def phase_state(self) -> dict:
         return {"level": self.phase, "levels": phase_catalog()}
+
+    def goal_progress(self) -> dict | None:
+        """Progress towards the loaded scenario's ``goal`` from the World State, or None without one."""
+        goal = (self.scenario or {}).get("goal")
+        if goal is None or self.sim is None:
+            return None
+        sim = self.sim
+        with sim.lock:
+            return evaluate_goal(goal, sim._entity_pose)
 
     def _require_sim(self) -> WorldSim:
         if self.sim is None:
@@ -260,6 +273,7 @@ class StewardHost:
             ("GET", "/wca/status"): guard(lambda q, b: {"scenario": (self.scenario or {}).get("name"),
                                                         **(self.sim.status() if self.sim else {"loaded": False})}),
             ("GET", "/wca/scene"): guard(lambda q, b: self._require_sim().world_state()),
+            ("GET", "/wca/goal"): guard(lambda q, b: {"goal": self.goal_progress()}),
             ("POST", "/wca/clock"): guard(clock),
             ("POST", "/wca/episode"): guard(episode),
             ("GET", "/wca/render"): guard(render),

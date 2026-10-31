@@ -6,7 +6,7 @@
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import { EgoError, EgoService } from '@steward/dsh-ego'
-import type { EgoQuery, EgoSkill, JsonObject, PredictionReceipt, ProblemReport, SkillJob } from '@steward/dsh-ego'
+import type { Annotation, EgoQuery, EgoSkill, FaceMatchResult, InspectResult, JsonObject, PredictionReceipt, ProblemReport, SkillJob } from '@steward/dsh-ego'
 import { baseUrl, HttpJsonError, requestJson } from '@steward/http-json'
 
 /** Validated plugin configuration. */
@@ -74,6 +74,18 @@ export class EgoRuntimeClient extends EgoService {
 
   receipt(id: string, signal?: AbortSignal): Promise<PredictionReceipt> {
     return this.call('GET', `/ego/receipt?id=${encodeURIComponent(id)}`, undefined, signal)
+  }
+
+  inspect(entity: string, px: number, signal?: AbortSignal): Promise<InspectResult> {
+    return this.call('POST', '/ego/inspect', { entity, px }, signal)
+  }
+
+  matchFace(entities: string[], reference: string, px: number, signal?: AbortSignal): Promise<FaceMatchResult> {
+    return this.call('POST', '/ego/match-face', { entities, reference, px }, signal)
+  }
+
+  annotate(annotation: Annotation, signal?: AbortSignal): Promise<JsonObject> {
+    return this.call('POST', '/ego/annotate', annotation, signal)
   }
 
   run(receiptId: string, signal?: AbortSignal): Promise<SkillJob> {

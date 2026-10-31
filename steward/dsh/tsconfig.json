@@ -5,6 +5,7 @@
     { "path": "packages/dsh-ego" },
     { "path": "packages/dsh-ego-runtime-client" },
     { "path": "packages/dsh-tool-ego" },
+    { "path": "packages/dsh-tool-ego-capabilities" },
     { "path": "packages/dsh-robot-safety" },
     { "path": "packages/dsh-world" },
     { "path": "packages/dsh-world-client" },

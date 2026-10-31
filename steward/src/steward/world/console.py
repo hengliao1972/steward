@@ -11,6 +11,7 @@ import math
 from pathlib import Path
 
 from steward.math3d import yaw_from_quat
+from steward.world.thinking import thinking_state
 
 CONSOLE_HTML = Path(__file__).with_name("console.html")
 
@@ -62,6 +63,7 @@ def console_state(host) -> dict:
         "scenario": (host.scenario or {}).get("name"),
         "phase": host.phase_state(),
         "task": (host.scenario or {}).get("task"),
+        "goal": host.goal_progress(),
         "t": round(status["t"], 2),
         "paused": status["paused"],
         "speed": status["speed"],
@@ -69,8 +71,18 @@ def console_state(host) -> dict:
         "holding": status["robots"],
         "events": status["events"],
         "robots": robots,
+        "thinking": _thinking(host),
         "perceptionAlerts": host.active_perception_alerts(),
     }
+
+
+def _thinking(host) -> dict[str, dict]:
+    """The robot agent's live thinking, from its Harness home when the console knows it."""
+    config = host.chat.config if host.chat is not None else None
+    home = getattr(config, "robot_home", None)
+    if home is None:
+        return {}
+    return thinking_state({"w:robot-1": str(home)})
 
 
 def _ego_view(ego: dict) -> dict:

@@ -8,7 +8,9 @@ initial interpenetration between entities and letting it settle for one second.
 
 from __future__ import annotations
 
+import base64
 import copy
+import io
 import json
 import math
 from pathlib import Path
@@ -130,7 +132,7 @@ class AuthoringService:
         data = mujoco.MjData(model)
         build.apply_initial(model, data)
         obb = entity_obb(model, data, build.names[holder.id], [link])
-        floor = obb.center[2] - obb.size[2] / 2 + 0.011
+        floor = _inner_floor(model, data, build.names[holder.id].bodies[link], obb)
         dx, dy = placement.get("offset", [0.0, 0.0])
         yaw0 = yaw_from_quat(obb.quat)
         c, s = math.cos(yaw0), math.sin(yaw0)
@@ -222,6 +224,24 @@ class AuthoringService:
 
     def list_scenarios(self) -> list[str]:
         return sorted(p.stem for p in (self.root / "scenarios").glob("*.json"))
+
+
+def _inner_floor(model: mujoco.MjModel, data: mujoco.MjData, body_name: str, obb) -> float:
+    """Height of a container's inner floor: the highest top, below the container's middle, of a
+    box geom of its link that covers the container's centre."""
+    bid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, body_name)
+    centre = np.asarray(obb.center, float)
+    floor = obb.center[2] - obb.size[2] / 2
+    for g in range(model.ngeom):
+        if model.geom_bodyid[g] != bid or model.geom_type[g] != mujoco.mjtGeom.mjGEOM_BOX:
+            continue
+        rot = data.geom_xmat[g].reshape(3, 3)
+        local = rot.T @ (centre - data.geom_xpos[g])
+        half = model.geom_size[g]
+        top = float(data.geom_xpos[g][2] + np.abs(rot[2]) @ half)
+        if abs(local[0]) <= half[0] and abs(local[1]) <= half[1] and top < centre[2]:
+            floor = max(floor, top)
+    return floor
 
 
 def kitchen_spec() -> dict:
@@ -329,6 +349,116 @@ KITCHEN_ASSETS = {
 }
 
 
+IMAGES = Path(__file__).resolve().parent.parent / "assets" / "images"
+PUZZLE_IMAGES = {"cat": ("cat.jpg", "猫"), "greatwall": ("great-wall.jpg", "长城")}
+PUZZLE_GRID = 3
+PUZZLE_PIECE_M = 0.115
+PUZZLE_TASK = ("餐桌上有一盒拼图，盒盖上印着拼好后的完整图案（{subject}）。盒子上写着：共 {count} 片，"
+               "拼好后 {size_cm:.1f} 厘米见方，和盒盖上印的图一样大。打开盒子，把盒子里的拼图块倒在桌上，"
+               "再把这些拼图块在桌上拼成和盒盖上一样的图案。")
+PUZZLE_LID_BORDER_RGB = (236, 232, 224)
+
+
+def png_b64(image, size: int) -> str:
+    """A PIL image as a base64 PNG of ``size`` × ``size`` pixels, for a printed texture."""
+    from PIL import Image
+
+    buf = io.BytesIO()
+    image.convert("RGB").resize((size, size), Image.LANCZOS).save(buf, "PNG", optimize=True)
+    return base64.b64encode(buf.getvalue()).decode()
+
+
+def puzzle_textures(image_file: str, lid_m: float, grid: int = PUZZLE_GRID) -> tuple[str, list[list[str]]]:
+    """The lid print and the ``grid`` × ``grid`` pieces (row 0 at the top) as textures. The lid
+    shows the picture as large as the finished puzzle, centred on a plain border across ``lid_m``."""
+    from PIL import Image
+
+    image = Image.open(IMAGES / image_file).convert("RGB")
+    side = min(image.size)
+    step = side // grid
+    pieces = [[png_b64(image.crop((c * step, r * step, (c + 1) * step, (r + 1) * step)), 128) for c in range(grid)]
+              for r in range(grid)]
+    lid_px = 256
+    picture_px = round(lid_px * grid * PUZZLE_PIECE_M / lid_m)
+    lid = Image.new("RGB", (lid_px, lid_px), PUZZLE_LID_BORDER_RGB)
+    margin = (lid_px - picture_px) // 2
+    lid.paste(image.crop((0, 0, grid * step, grid * step)).resize((picture_px, picture_px), Image.LANCZOS), (margin, margin))
+    return png_b64(lid, lid_px), pieces
+
+
+def puzzle_spec(name: str, image: str, seed: int) -> tuple[list[tuple[str, str, dict]], dict, dict]:
+    """Assets, scene spec and goal for a picture puzzle: an open box with its printed lid on a table,
+    the pieces lying shuffled and turned by quarter turns inside it.
+
+    The goal states where every piece lies relative to its right and lower neighbour when the
+    picture is complete (offset in the piece's frame, upright, same heading)."""
+    n = PUZZLE_GRID
+    box_w = n * PUZZLE_PIECE_M + (n + 1) * 0.012 + 0.02
+    lid_w = box_w + 0.02
+    full, pieces = puzzle_textures(PUZZLE_IMAGES[image][0], lid_w)
+    assets = [
+        ("puzzle-table", "dining_table", {"width": 2.0, "depth": 1.0}),
+        (f"{name}-box", "open_box", {"width": box_w, "depth": box_w}),
+        (f"{name}-lid", "printed_board", {"width": lid_w, "depth": lid_w, "thickness": 0.008,
+                                          "texture": full, "mass": 0.08, "category": "lid"}),
+    ]
+    for r in range(n):
+        for c in range(n):
+            assets.append((f"{name}-piece-{r}{c}", "printed_board",
+                           {"width": PUZZLE_PIECE_M, "depth": PUZZLE_PIECE_M, "texture": pieces[r][c],
+                            "category": "puzzle_piece"}))
+    rng = np.random.default_rng(seed)
+    order = rng.permutation(n * n)
+    turns = rng.integers(0, 4, n * n)
+    pitch = PUZZLE_PIECE_M + 0.012
+    entities = [
+        {"id": "w:room", "asset": "kitchen-room", "at": {"x": 0.0, "y": 0.0}},
+        {"id": "w:table-1", "asset": "puzzle-table", "at": {"x": 0.5, "y": -0.6}},
+        {"id": "w:box", "asset": f"{name}-box", "on": "w:table-1", "offset": [-0.7, 0.15]},
+    ]
+    for slot, k in enumerate(order):
+        r, c = divmod(int(k), n)
+        sr, sc = divmod(slot, n)
+        entities.append({"id": f"w:piece-{r}{c}", "asset": f"{name}-piece-{r}{c}", "in": "w:box",
+                         "offset": [(sc - 1) * pitch, (1 - sr) * pitch], "yaw": float(turns[slot]) * math.pi / 2})
+    entities += [
+        {"id": "w:lid", "asset": f"{name}-lid", "on": "w:box", "offset": [0.0, 0.0]},
+        {"id": "w:robot-1", "asset": "steward-bot", "at": {"x": -1.6, "y": -1.3, "yaw": 0.0}},
+    ]
+    constraints = []
+    for r in range(n):
+        for c in range(n):
+            if c + 1 < n:
+                constraints.append({"a": f"w:piece-{r}{c}", "b": f"w:piece-{r}{c + 1}", "offset": [PUZZLE_PIECE_M, 0.0]})
+            if r + 1 < n:
+                constraints.append({"a": f"w:piece-{r}{c}", "b": f"w:piece-{r + 1}{c}", "offset": [0.0, -PUZZLE_PIECE_M]})
+    goal = {"kind": "relative-poses", "entities": [f"w:piece-{r}{c}" for r in range(n) for c in range(n)],
+            "constraints": constraints, "tolerance": {"positionM": 0.03, "yawDeg": 15.0}, "upright": True}
+    spec = {"name": name, "entities": entities,
+            "regions": [{"id": "room", "label": "room", "polygon": [[-3, -2.5], [3, -2.5], [3, 2.5], [-3, 2.5]]}]}
+    return assets, spec, goal
+
+
+def build_puzzle_scenarios(service: AuthoringService) -> list[str]:
+    """Publish the picture-puzzle assets and save the ``puzzle-cat`` and ``puzzle-greatwall`` scenarios."""
+    names = []
+    for seed, (image, (_, subject)) in enumerate(PUZZLE_IMAGES.items()):
+        name = f"puzzle-{image}"
+        assets, spec, goal = puzzle_spec(name, image, seed)
+        for asset, generator, params in assets:
+            created = service.create_asset(generator=generator, params=params)
+            if not created["validation"]["ok"]:
+                raise AuthoringError(f"generated asset {asset} failed validation: {created['validation']['errors']}")
+            service.publish_asset(asset, created["template"], meta={"generator": generator})
+        service.compose_scene(spec)
+        service.save_scenario({"name": name, "scene": name, "robots": ["w:robot-1"],
+                               "task": PUZZLE_TASK.format(subject=subject, count=PUZZLE_GRID**2,
+                                                          size_cm=PUZZLE_GRID * PUZZLE_PIECE_M * 100),
+                               "goal": goal, "phase": "phase0"})
+        names.append(name)
+    return names
+
+
 def build_default_kitchen(service: AuthoringService) -> dict:
     """Generate, validate and publish the kitchen assets, compose the scene and save the scenario."""
     published = {}
@@ -359,4 +489,6 @@ def build_default_kitchen(service: AuthoringService) -> dict:
         "robots": ["w:robot-1"],
         "task": CHORES_TASK,
     })
-    return {"assets": {k: v["version"][:12] for k, v in published.items()}, "scene": scene, "scenario": scenario}
+    puzzles = build_puzzle_scenarios(service)
+    return {"assets": {k: v["version"][:12] for k, v in published.items()}, "scene": scene, "scenario": scenario,
+            "puzzles": puzzles}

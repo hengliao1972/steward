@@ -90,6 +90,17 @@ class GraspConfig:
     handle_kd: float = 120.0
 
 
+def _under(obb, point: np.ndarray) -> bool:
+    """Whether ``point`` lies over the footprint of an oriented box."""
+    local = matrix_from_quat(obb.quat).T @ (np.asarray(point, float) - np.asarray(obb.center))
+    return abs(local[0]) <= obb.size[0] / 2 and abs(local[1]) <= obb.size[1] / 2
+
+
+def _is_pourable(ent) -> bool:
+    """A free object whose root link is ``pourable``: a container carried and tipped with its contents."""
+    return ent.rigid.root.value == "free" and any(a.value == "pourable" for a in ent.rigid.links[0].affordances)
+
+
 @dataclass
 class _RenderRequest:
     camera: str | dict
@@ -365,11 +376,7 @@ class WorldSim:
             if rs.attached is not None and scene.find(rs.attached) is None:
                 rs.attached, rs.rel = None, None
             if rs.attached is not None:
-                for gid in range(self.model.ngeom):
-                    if self._body_entity.get(int(self.model.geom_bodyid[gid])) == rs.attached:
-                        rs.saved_contacts[gid] = (int(self.model.geom_contype[gid]), int(self.model.geom_conaffinity[gid]))
-                        self.model.geom_contype[gid] = 0
-                        self.model.geom_conaffinity[gid] = 0
+                self._suspend_contacts(rs)
         self._epoch += 1
         mujoco.mj_forward(self.model, self.data)
 
@@ -425,6 +432,9 @@ class WorldSim:
                     continue
                 self.step(n)
                 self._clock.notify_all()
+            # Python locks are not fair: running flat out, this thread would take the lock straight
+            # back and starve requests that need it (a robot registering its first hold).
+            time.sleep(0)
 
     # ------------------------------------------------------------------ clock
     def wait_until(self, t: float | None = None, hold: str | None = None, timeout: float | None = None,
@@ -518,14 +528,15 @@ class WorldSim:
 
     # --------------------------------------------------------------- commands
     def command(self, robot_id: str, cmd: dict) -> dict:
-        """Apply a robot actuator command: base [x, y, yaw], lift, reach, gripper "open"/"close"."""
+        """Apply a robot actuator command: base [x, y, yaw], lift, reach, wrist_yaw, wrist_roll,
+        gripper "open"/"close"."""
         with self.lock:
             rs = self._robot(robot_id)
             names = self.build.names[robot_id]
             if "base" in cmd:
                 for key, value in zip(("root_x", "root_y", "root_yaw"), cmd["base"], strict=True):
                     self._set_ctrl(names.actuators[key], value)
-            for joint in ("lift", "reach"):
+            for joint in ("lift", "reach", "wrist_yaw", "wrist_roll"):
                 if joint in cmd:
                     self._set_ctrl(names.actuators[joint], cmd[joint])
             if "gripper" in cmd:
@@ -555,20 +566,28 @@ class WorldSim:
 
     def _try_attach(self, rs: _RobotState) -> None:
         """Ideal grasp: attach the nearest free object within capture range that has nothing resting
-        on or in it (the top of a stack), or else grasp the nearest drawer handle."""
+        on it (the top of a stack) or is a pourable container (carried with what lies in it), or else grasp the
+        nearest drawer handle."""
         grip = np.asarray(self.gripper_pose(rs.entity_id)["p"])
         supporting = {r.b["entity"] for r in self._relations()
                       if r.type == "supported-by" and self.template.entity(r.a["entity"]).rigid.root.value == "free"}
-        best, best_d = None, self.grasp.capture_radius
+        best, best_d, best_top = None, self.grasp.capture_radius, -math.inf
         for ent in self.template.entities:
-            if ent.role != "object" or ent.rigid.root.value != "free" or ent.id in supporting:
+            if ent.role != "object" or ent.rigid.root.value != "free":
+                continue
+            if ent.id in supporting and not (_is_pourable(ent) and not self._covered(ent.id)):
                 continue
             if any(other.attached == ent.id for other in self.robots.values()):
                 continue
             obb = entity_obb(self.model, self.data, self.build.names[ent.id])
             d = float(np.linalg.norm(np.asarray(obb.center) - grip))
-            if d <= best_d:
-                best, best_d = ent.id, d
+            if d > self.grasp.capture_radius:
+                continue
+            # Closing from above, the gripper meets the topmost object under it first (a lid before
+            # the pieces in the box); elsewhere the nearest object.
+            top = obb.center[2] + obb.size[2] / 2 if _under(obb, grip) else -math.inf
+            if (top, -d) > (best_top, -best_d):
+                best, best_d, best_top = ent.id, d, top
         if best is None:
             handle = self._nearest_handle(grip)
             if handle is not None:
@@ -582,12 +601,30 @@ class WorldSim:
         obj_pose = {"p": self.data.xpos[body].tolist(), "q": self.data.xquat[body].tolist()}
         rs.attached = best
         rs.rel = pose_compose(pose_inverse(self.gripper_pose(rs.entity_id)), obj_pose)
+        self._suspend_contacts(rs)
+        self.events.append({"t": self.time, "type": "grasp/attach", "robot": rs.entity_id, "entity": best})
+
+    def _suspend_contacts(self, rs: _RobotState) -> None:
+        """A carried object moves with the gripper and stops colliding, so it never snags on what it
+        is lifted from; a pourable container keeps colliding, so what lies in it stays in it."""
+        if _is_pourable(self.template.entity(rs.attached)):
+            return
         for gid in range(self.model.ngeom):
-            if self._body_entity.get(int(self.model.geom_bodyid[gid])) == best:
+            if self._body_entity.get(int(self.model.geom_bodyid[gid])) == rs.attached:
                 rs.saved_contacts[gid] = (int(self.model.geom_contype[gid]), int(self.model.geom_conaffinity[gid]))
                 self.model.geom_contype[gid] = 0
                 self.model.geom_conaffinity[gid] = 0
-        self.events.append({"t": self.time, "type": "grasp/attach", "robot": rs.entity_id, "entity": best})
+
+    def _covered(self, entity_id: str) -> bool:
+        """Whether something rests on top of an entity (above its top face), not merely in it."""
+        top = self.entity_obb(entity_id)
+        z_top = top.center[2] + top.size[2] / 2
+        for r in self._relations():
+            if r.type == "supported-by" and r.b["entity"] == entity_id:
+                other = self.entity_obb(r.a["entity"])
+                if other.center[2] - other.size[2] / 2 >= z_top - 0.01:
+                    return True
+        return False
 
     def _nearest_handle(self, grip: np.ndarray) -> dict | None:
         """The drawer handle (front-most geom of a ``graspable-handle`` link) within capture range."""
@@ -650,16 +687,25 @@ class WorldSim:
         rs.attached, rs.rel, rs.saved_contacts = None, None, {}
 
     def _follow_attached(self) -> None:
+        """Move each held object rigidly with its gripper. It also takes the gripper's velocity, so
+        contacts carry what lies in a held container instead of letting it pass through."""
         for rs in self.robots.values():
             if rs.attached is None:
                 continue
-            target = pose_compose(self.gripper_pose(rs.entity_id), rs.rel)
+            grip = self.gripper_pose(rs.entity_id)
+            target = pose_compose(grip, rs.rel)
             jid = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_JOINT, self.build.names[rs.attached].root_joints[0])
             qadr = self.model.jnt_qposadr[jid]
             self.data.qpos[qadr : qadr + 3] = target["p"]
             self.data.qpos[qadr + 3 : qadr + 7] = target["q"]
             dadr = self.model.jnt_dofadr[jid]
-            self.data.qvel[dadr : dadr + 6] = 0.0
+            gid = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, self.build.names[rs.entity_id].bodies["gripper"])
+            vel = np.zeros(6)
+            mujoco.mj_objectVelocity(self.model, self.data, mujoco.mjtObj.mjOBJ_BODY, gid, vel, 0)
+            omega, v_grip = vel[:3], vel[3:]
+            arm = np.asarray(target["p"]) - np.asarray(grip["p"])
+            self.data.qvel[dadr : dadr + 3] = v_grip + np.cross(omega, arm)
+            self.data.qvel[dadr + 3 : dadr + 6] = matrix_from_quat(target["q"]).T @ omega
 
     def _root_body(self, entity_id: str) -> int:
         names = self.build.names[entity_id]

@@ -1,0 +1,22 @@
+{
+  "name": "@steward/dsh-tool-ego-capabilities",
+  "version": "0.0.1",
+  "private": true,
+  "description": "The robot's own capability library: programs the Ego Harness wrote for run_code, saved by name and reused in later tasks.",
+  "type": "module",
+  "main": "./lib/index.js",
+  "types": "./lib/index.d.ts",
+  "exports": { ".": { "types": "./lib/index.d.ts", "default": "./lib/index.js" } },
+  "files": ["lib"],
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.5",
+    "@deepseek-ai/dsh-tools": "0.2.1-rc.3",
+    "@deepseek-ai/schemastery": "^3.18.5"
+  },
+  "devDependencies": {
+    "@deepseek-ai/cordis": "4.0.5",
+    "@deepseek-ai/dsh-tools": "0.2.1-rc.3",
+    "@deepseek-ai/schemastery": "3.18.5",
+    "@types/node": "^24.0.0"
+  }
+}

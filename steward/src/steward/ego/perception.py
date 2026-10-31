@@ -189,3 +189,125 @@ def box_at_yaw(points: np.ndarray, yaw: float) -> tuple[np.ndarray, np.ndarray, 
     z_lo, z_hi = points[:, 2].min(), points[:, 2].max()
     yaw = (yaw + math.pi / 2) % math.pi - math.pi / 2
     return np.array([centre_xy[0], centre_xy[1], (z_lo + z_hi) / 2]), np.array([ex, ey, z_hi - z_lo]), yaw
+
+
+def top_face_array(frame: dict, cam_pose: dict, centre: np.ndarray, size: np.ndarray, yaw: float, top: float,
+                   px: int, py: int | None = None, depth_tol: float = 0.025) -> np.ndarray:
+    """Colours of a box's top face sampled on a grid of ``px`` columns by ``py`` rows (default
+    ``px``) in the box frame (column = +x, row 0 = +y), each read from the pixel the grid point
+    projects to; NaN where the point is outside the image or the depth there is not the point's
+    (something nearer hides it, or the face is not where the box says).
+
+    :returns: array of shape ``(py, px, 3)``."""
+    depth, rgb = frame["depth"], frame["rgb"]
+    h, w = depth.shape
+    f = (h / 2.0) / math.tan(math.radians(frame["fovy"]) / 2.0)
+    rot = matrix_from_quat(cam_pose["q"])
+    py = px if py is None else py
+    lx, ly = np.meshgrid(((np.arange(px) + 0.5) / px - 0.5) * size[0], -((np.arange(py) + 0.5) / py - 0.5) * size[1])
+    c, s = math.cos(yaw), math.sin(yaw)
+    world = np.stack([centre[0] + c * lx - s * ly, centre[1] + s * lx + c * ly, np.full_like(lx, top)], axis=-1)
+    x, y, z = np.moveaxis((world - np.asarray(cam_pose["p"], float)) @ rot, -1, 0)
+    ok = x >= 0.1
+    xs = np.where(ok, x, 1.0)
+    u, v = np.rint((w - 1) / 2 - y * f / xs).astype(int), np.rint((h - 1) / 2 - z * f / xs).astype(int)
+    ok &= (u >= 0) & (u < w) & (v >= 0) & (v < h)
+    u, v = np.clip(u, 0, w - 1), np.clip(v, 0, h - 1)
+    ok &= np.abs(depth[v, u].astype(float) - x) <= depth_tol
+    out = np.full((py, px, 3), np.nan)
+    out[ok] = rgb[v[ok], u[ok]]
+    return out
+
+
+def face_rows(face: np.ndarray) -> list[list[list[int] | None]]:
+    """A face array as JSON rows: ``[r, g, b]`` integers, ``None`` where unseen."""
+    return [[None if not np.isfinite(c[0]) else [int(round(float(v))) for v in c] for c in row] for row in face]
+
+
+def top_face(frame: dict, cam_pose: dict, centre: np.ndarray, size: np.ndarray, yaw: float, top: float,
+             px: int, depth_tol: float = 0.025, py: int | None = None) -> list[list[list[int] | None]]:
+    """:func:`top_face_array` as JSON rows (``None`` where unseen)."""
+    return face_rows(top_face_array(frame, cam_pose, centre, size, yaw, top, px, py, depth_tol))
+
+
+def resample_face(face: np.ndarray, cols: int, rows: int) -> np.ndarray:
+    """A face array averaged into ``rows`` × ``cols`` cells over the same extent (each fine cell
+    counts in the coarse cell its centre falls in); NaN where no fine cell was seen."""
+    h, w = face.shape[:2]
+    r = np.repeat(((np.arange(h) * rows) // h)[:, None], w, axis=1)
+    c = np.repeat(((np.arange(w) * cols) // w)[None, :], h, axis=0)
+    seen = np.isfinite(face[..., 0])
+    sums, counts = np.zeros((rows, cols, 3)), np.zeros((rows, cols))
+    np.add.at(sums, (r[seen], c[seen]), face[seen])
+    np.add.at(counts, (r[seen], c[seen]), 1.0)
+    out = np.full((rows, cols, 3), np.nan)
+    hit = counts > 0
+    out[hit] = sums[hit] / counts[hit][:, None]
+    return out
+
+
+def _grid(face) -> np.ndarray:
+    if isinstance(face, np.ndarray):
+        return face.astype(float)
+    return np.array([[c if c is not None else [np.nan] * 3 for c in row] for row in face], float)
+
+
+def match_face(face: list[list], reference: list[list], top: int = 3) -> dict:
+    """Where a face appears on a reference face sampled at the same cell size, and turned how.
+
+    Each grid is in its object's frame (column = +x, row 0 = +y), as JSON rows (cells ``[r, g, b]``
+    or ``None``) or as an array with NaN where unseen.
+    The face is turned by k quarter turns counter-clockwise (as :func:`world_up_face` turns) and
+    slid over the reference cell by cell; each placement scores the normalized correlation of the
+    colours both grids hold there.
+
+    :param face: grid of the object's face.
+    :param reference: grid of the reference face, larger than ``face``.
+    :param top: placements to return, best first; each sits apart from the better ones by at least
+        half the face.
+    :returns: ``{matches: [{row, col, turns, score}], spread}`` where ``row`` and ``col`` are the
+        reference cell under the turned face's centre (fractional), ``turns`` is k and ``spread``
+        is the face's colour standard deviation (near 0: a plain face)."""
+    obj, ref = _grid(face), _grid(reference)
+    spread = float(np.nanstd(obj)) if np.isfinite(obj).any() else 0.0
+    candidates = []
+    for k in range(4):
+        turned = np.rot90(obj, k)  # counter-clockwise seen from above, row 0 at +y
+        h, w = turned.shape[:2]
+        for i in range(ref.shape[0] - h + 1):
+            for j in range(ref.shape[1] - w + 1):
+                window = ref[i:i + h, j:j + w]
+                both = np.isfinite(turned) & np.isfinite(window)
+                if both.sum() < 0.5 * turned.size:
+                    continue
+                # Each channel against its own mean: a picture's overall tint matches everywhere.
+                a = np.where(both, turned - np.nanmean(np.where(both, turned, np.nan), axis=(0, 1)), 0.0)
+                b = np.where(both, window - np.nanmean(np.where(both, window, np.nan), axis=(0, 1)), 0.0)
+                norm = math.sqrt(float((a * a).sum() * (b * b).sum()))
+                score = float((a * b).sum() / norm) if norm > 1e-9 else 0.0
+                candidates.append((score, i + h / 2, j + w / 2, k, max(h, w)))
+    candidates.sort(key=lambda c: -c[0])
+    chosen: list[tuple] = []
+    for cand in candidates:
+        if all(math.hypot(cand[1] - c[1], cand[2] - c[2]) >= c[4] / 2 for c in chosen):
+            chosen.append(cand)
+        if len(chosen) == top:
+            break
+    return {"matches": [{"row": r, "col": c, "turns": k, "score": round(s, 3)} for s, r, c, k, _ in chosen],
+            "spread": round(spread, 1)}
+
+
+def world_up_face(rows: list[list], yaw: float) -> tuple[list[list], int]:
+    """A face grid in the object frame (column = +x, row 0 = +y) turned by the object's heading
+    rounded to quarter turns, so that, seen from above, row 0 faces the map's +y and columns run
+    towards +x; the face stays turned by the remainder, under 45 degrees.
+
+    :param rows: square grid as :func:`top_face` returns it.
+    :param yaw: heading of the object frame in the map, radians.
+    :returns: the turned grid and the counter-clockwise turn applied, degrees (0, 90, 180 or 270)."""
+    quarter = int(round(yaw / (math.pi / 2))) % 4
+    turned = rows
+    for _ in range(quarter):
+        # Counter-clockwise as seen from above: the last column becomes row 0.
+        turned = [[row[len(row) - 1 - k] for row in turned] for k in range(len(turned[0]))]
+    return turned, 90 * quarter

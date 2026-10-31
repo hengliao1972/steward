@@ -228,6 +228,38 @@ def nesting_bowl(radius: float = 0.08, height: float = 0.06, mass: float = 0.3, 
     return _entity("bowl", "object", "free", [link])
 
 
+CARDBOARD = [0.78, 0.66, 0.48, 1.0]
+
+
+def printed_board(width: float = 0.12, depth: float = 0.12, thickness: float = 0.006, texture: str | None = None,
+                  back: list[float] | None = None, mass: float = 0.02, category: str = "board") -> Entity:
+    """Thin rigid board with a printed top face (``texture``: base64 PNG, image top towards local
+    +y) and a plain back and edges (``back``): a puzzle piece, a box lid, a card."""
+    link = Link(id="body", name=category.replace("_", " "),
+                geometry={"collision": [primitive("box", [width, depth, thickness], pose([0, 0, thickness / 2]),
+                                                  back or CARDBOARD, texture=texture)]},
+                inertial=exact({"mass": mass}), material=exact({"friction": 0.8, "fragility": 0.1, "contactTime": 0.005}),
+                affordances=[exact("graspable"), exact("flat")])
+    return _entity(category, "object", "free", [link])
+
+
+def open_box(width: float = 0.42, depth: float = 0.42, height: float = 0.05, wall: float = 0.01,
+             color: list[float] | None = None, mass: float = 0.3) -> Entity:
+    """Open-top box (a base and four walls) that can be carried with what lies in it and tipped
+    to pour it out."""
+    rgba = color or CARDBOARD
+    base_t = 0.015
+    geoms = [primitive("box", [width, depth, base_t], pose([0, 0, base_t / 2]), rgba)]
+    h = height - base_t
+    for x, y, sx, sy in ((width / 2 - wall / 2, 0, wall, depth), (-width / 2 + wall / 2, 0, wall, depth),
+                         (0, depth / 2 - wall / 2, width - 2 * wall, wall), (0, -depth / 2 + wall / 2, width - 2 * wall, wall)):
+        geoms.append(primitive("box", [sx, sy, h], pose([x, y, base_t + h / 2]), rgba))
+    link = Link(id="body", name="box", geometry={"collision": geoms}, inertial=exact({"mass": mass}),
+                material=exact({"friction": 0.8, "fragility": 0.1, "contactTime": 0.005}),
+                affordances=[exact("graspable"), exact("container"), exact("pourable")])
+    return _entity("box", "object", "free", [link])
+
+
 def wine_glass(bowl_radius: float = 0.04, bowl_height: float = 0.09, stem_height: float = 0.09,
                base_radius: float = 0.036, mass: float = 0.2) -> Entity:
     """Clear stemmed wine glass: base disc, thin stem and a cup-shaped bowl."""
@@ -362,7 +394,8 @@ def chair(seat: float = 0.46, seat_height: float = 0.46, back_height: float = 0.
 
 
 def steward_bot(camera_pitch_deg: float = 30.0, camera_fovy_deg: float = 60.0) -> Entity:
-    """Phase 0 mobile manipulator: planar base, vertical lift, horizontal reach, ideal gripper.
+    """Phase 0 mobile manipulator: planar base, vertical lift, horizontal reach, a two-axis wrist
+    (yaw about the vertical, roll about the arm) and an ideal gripper.
 
     The base collides with the world. The lift carriage, arm and gripper are visual-only links,
     so an approaching gripper never pushes the target: Phase 0 grasping is an ideal attach
@@ -413,14 +446,28 @@ def steward_bot(camera_pitch_deg: float = 30.0, camera_fovy_deg: float = 60.0) -
               axis=exact([1.0, 0.0, 0.0]), limits=exact({"lo": 0.05, "hi": 0.70}), q=exact([0.10]), qd=exact([0.0]),
               dynamics=exact({"damping": 150.0}),
               actuator={"kind": "position", "limits": {"effort": 800.0, "velocity": 1.2}, "gains": {"kp": 2500.0}}),
-        _fixed("gripper_mount", "arm", "gripper", pose([0.04, 0, 0])),
+        _fixed("gripper_mount", "arm", "wrist", pose([0.04, 0, 0])),
+        # Both wrist axes pass through the gripper point, so turning them never moves what it holds
+        # away from the gripper: yaw turns a held object about the vertical, roll tips it (pouring).
+        Joint(id="wrist_yaw", parent="wrist", child="hand", type=exact("revolute"), origin=exact(pose()),
+              axis=exact([0.0, 0.0, 1.0]), limits=exact({"lo": -math.pi, "hi": math.pi}), q=exact([0.0]), qd=exact([0.0]),
+              dynamics=exact({"damping": 2.0}),
+              actuator={"kind": "position", "limits": {"effort": 40.0, "velocity": 6.0}, "gains": {"kp": 40.0, "armature": 0.02}}),
+        Joint(id="wrist_roll", parent="hand", child="gripper", type=exact("revolute"), origin=exact(pose()),
+              axis=exact([1.0, 0.0, 0.0]), limits=exact({"lo": -3.2, "hi": 3.2}), q=exact([0.0]), qd=exact([0.0]),
+              dynamics=exact({"damping": 2.0}),
+              actuator={"kind": "position", "limits": {"effort": 40.0, "velocity": 6.0}, "gains": {"kp": 40.0, "armature": 0.02}}),
     ]
     root_actuator = {
         "kind": "position",
         "limits": {"effort": [3600.0, 3600.0, 1000.0], "velocity": [2.0, 2.0, 4.0]},
         "gains": {"kp": [8000.0, 8000.0, 900.0], "damping": [1500.0, 1500.0, 130.0]},
     }
-    return _entity("steward-bot", "robot", "planar", [base, head, carriage, arm, gripper], joints,
+    wrist = Link(id="wrist", name="wrist", geometry={"visual": [primitive("cylinder", [0.02, 0.03], None, STEEL)]},
+                 inertial=exact({"mass": 0.1}))
+    hand = Link(id="hand", name="hand", geometry={"visual": [primitive("box", [0.03, 0.03, 0.03], None, STEEL)]},
+                inertial=exact({"mass": 0.1}))
+    return _entity("steward-bot", "robot", "planar", [base, head, carriage, arm, wrist, hand, gripper], joints,
                    state_vars={"gripper": exact("open")}, root_actuator=root_actuator)
 
 
@@ -443,5 +490,7 @@ GENERATORS: dict[str, Callable[..., Entity]] = {
     "pill_bottle": pill_bottle,
     "perfume_bottle": perfume_bottle,
     "chair": chair,
+    "printed_board": printed_board,
+    "open_box": open_box,
     "steward_bot": steward_bot,
 }

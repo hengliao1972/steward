@@ -365,11 +365,12 @@
 # == @deepseek-ai/dsh-base
 - id: mcp-resources
   name: '@deepseek-ai/dsh-mcp-resources'
-# == @deepseek-ai/dsh-base, patched by @deepseek-ai/dsh-headless
+# == @deepseek-ai/dsh-base, patched by @deepseek-ai/dsh-headless, @steward/dsh-bundle-ego
 - id: tools
   name: '@deepseek-ai/dsh-tools'
   config:
-    mode: !!js process.env.DSH_TOOLS_MODE
+    mode: ptc
+# == @deepseek-ai/dsh-base, patched by @deepseek-ai/dsh-headless
 - id: system-prompt
   name: '@deepseek-ai/dsh-system-prompt'
   config:
@@ -408,3 +409,9 @@
   name: '@steward/dsh-robot-safety'
   config:
     maxRisk: 0.35
+- id: steward-tool-ego-capabilities
+  name: '@steward/dsh-tool-ego-capabilities'
+  config:
+    root: !!js >-
+      (process.env.DSH_HOME ?? process.env.HOME + '/.dsh') +
+      '/steward-capabilities'

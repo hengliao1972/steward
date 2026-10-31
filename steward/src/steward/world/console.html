@@ -198,6 +198,8 @@
   <section class="card" id="planCard">
     <h2>机器人计划 <span class="pill" id="planState"></span><span class="sub" id="planMeta"></span></h2>
     <div id="planBody" class="task">机器人尚未发布计划</div>
+    <h2 style="margin-top:14px">当前思考 <span class="sub" id="thinkMeta"></span></h2>
+    <div id="thinkBody" class="task" style="white-space:pre-wrap"></div>
   </section>
   <div class="grid3">
     <section class="card">
@@ -488,6 +490,20 @@ document.querySelectorAll('[data-view]').forEach(btn => btn.onclick = () => {
 });
 
 // ------------------------------------------------------------------ refresh
+function renderThinking() {
+  const t = state.thinking && state.thinking[robotId];
+  if (!t) { $('thinkMeta').textContent = ''; $('thinkBody').textContent = '尚无思考记录'; return; }
+  if (t.error) { $('thinkMeta').textContent = '读取失败'; $('thinkBody').textContent = t.error; return; }
+  const entries = t.entries || [];
+  $('thinkMeta').textContent = entries.length
+    ? `　Ego Harness · 第 ${entries[entries.length - 1].step} 步${entries.some(e => e.active) ? ' · 思考中' : ''}` : '　Ego Harness';
+  const box = $('thinkBody');
+  box.innerHTML = entries.map(e => `<div class="${e.active ? 'plan-trouble' : ''}" style="margin:4px 0">${esc(e.text)}`
+    + (e.conclusion && e.conclusion.length ? `<div style="color:var(--muted);font-size:12px">结论：调用 ${e.conclusion.map(esc).join('、')}</div>` : '')
+    + `</div>`).join('') || '尚无思考记录';
+  box.scrollTop = box.scrollHeight;
+}
+
 async function refresh() {
   try {
     state = await api('GET', '/console/state');
@@ -501,13 +517,16 @@ async function refresh() {
     perceptionAlerts = state.perceptionAlerts || [];
     renderAlerts();
     renderPhase(state.phase);
-    $('task').textContent = state.task ? `任务：${state.task}` : '';
+    const goal = state.goal;
+    const progress = goal ? ` · 目标进度：最大拼合 ${goal.largestGroup}/${goal.entities}，相邻关系 ${goal.satisfied}/${goal.total}${goal.complete ? '（完成）' : ''}` : '';
+    $('task').textContent = state.task ? `任务：${state.task}${progress}` : '';
     $('pause').textContent = state.paused ? '继续' : '暂停';
     if (document.activeElement !== $('speed')) $('speed').value = String(state.speed);
     const ego = state.robots[robotId] && state.robots[robotId].ego;
     $('egoSub').textContent = ego ? `${robotId} 的自我态 · ES 版本 ${ego.version}` : '机器人自我态';
     if (!ego) $('egoEmpty').style.display = 'grid';
     drawOverlays(); drawMap(); drawMetrics(); drawEvents();
+    renderThinking();
   } catch (e) { showError(e); }
 }
 

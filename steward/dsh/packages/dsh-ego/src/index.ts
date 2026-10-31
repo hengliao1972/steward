@@ -22,7 +22,73 @@ export interface JsonObject {
 }
 
 /** Skills the Ego Runtime can predict and run. */
-export type EgoSkill = 'navigate' | 'pick' | 'place' | 'open' | 'close'
+export type EgoSkill = 'navigate' | 'pick' | 'place' | 'pour' | 'open' | 'close'
+
+/** The top face of an Ego-State object as the head camera sees it now. */
+export interface InspectResult {
+  entity: string
+  /** Grid size: `rows` holds `px` rows of `px` cells. */
+  px: number
+  /** Heading of the object's frame in the map, degrees. */
+  yawDeg: number
+  sizeM: number[]
+  /** Share of cells seen (not out of view or hidden). */
+  coverage: number
+  /** Row 0 is the object's +y edge, column 0 its -x edge; each cell is [r, g, b] (0-255) or null. */
+  rows: (number[] | null)[][]
+  /** `rows` turned `worldTurnDeg` counter-clockwise: seen from above, row 0 faces the map's +y and columns run towards +x. */
+  worldRows: (number[] | null)[][]
+  /** The heading `yawDeg` rounded to a quarter turn (0, 90, 180 or 270): how far `worldRows` is turned from `rows`. */
+  worldTurnDeg: number
+  stamp: number
+}
+
+/** One placement of an object's face on a reference face (see {@link EgoService.matchFace}). */
+export interface FaceMatch {
+  /** Where the face centre lies on the reference, in the reference frame from its centre, metres. */
+  offsetM: number[]
+  /** Quarter turns counter-clockwise (seen from above) that align the face with the reference, degrees. */
+  turnDeg: number
+  /** The object heading that aligns its face with the reference as the reference lies now, degrees. */
+  placeYawDeg: number
+  /** Colour correlation, 1 = identical. */
+  score: number
+}
+
+/** Where one object's face appears on the reference, or why it could not be matched. */
+export interface FaceMatchEntry {
+  entity: string
+  /** Set instead of the other fields when the object's face is not known well enough. */
+  error?: string
+  /** Cell size the faces were compared at, metres. */
+  cellM?: number
+  /** Colour standard deviation of the object's face; near 0 the face is plain. */
+  spread?: number
+  /** Share of the object's face the robot has seen. */
+  faceCoverage?: number
+  /** World seconds since the robot last saw the object's face. */
+  seenAgoS?: number
+  /** Best placements first, each at least half a face apart from the better ones. */
+  matches?: FaceMatch[]
+}
+
+/** Where objects' faces appear on a reference face printed at the same scale. */
+export interface FaceMatchResult {
+  reference: string
+  /** Share of the reference face the robot has seen. */
+  referenceCoverage: number
+  results: FaceMatchEntry[]
+  stamp: number
+}
+
+/** The robot agent's identification of an Ego-State object. */
+export interface Annotation {
+  entity: string
+  /** Category name to use from now on, for example `box`. */
+  label?: string
+  /** Affordances replacing the category prior, for example `graspable`, `pourable`, `support-surface`. */
+  affordances?: string[]
+}
 
 /** Filter for Ego-State object queries. */
 export interface EgoQuery {
@@ -148,6 +214,35 @@ export abstract class EgoService extends Service {
    * @returns the receipt as the runtime stores it.
    */
   abstract receipt(id: string, signal?: AbortSignal): Promise<PredictionReceipt>
+
+  /**
+   * Look closely at an object's top face (one fresh camera frame).
+   * @param entity - Ego-State object id.
+   * @param px - grid size, 4 to 64.
+   * @param signal - caller cancellation.
+   * @returns the sampled face colours in the object's own frame.
+   */
+  abstract inspect(entity: string, px: number, signal?: AbortSignal): Promise<InspectResult>
+
+  /**
+   * Find where objects' top faces appear on a reference object's top face printed at the same
+   * scale, from the faces the robot remembers (refreshed first for those in view).
+   * @param entities - Ego-State ids of the objects whose faces are sought.
+   * @param reference - Ego-State id of the object showing the whole picture.
+   * @param px - cells across each object's shorter side, 4 to 16.
+   * @param signal - caller cancellation.
+   * @returns the best placements of each face on the reference.
+   */
+  abstract matchFace(entities: string[], reference: string, px: number, signal?: AbortSignal): Promise<FaceMatchResult>
+
+  /**
+   * Record what the robot agent has identified an object to be; ESim and the estimator use the
+   * label and affordances in place of the classifier's category prior.
+   * @param annotation - object id, label and affordances.
+   * @param signal - caller cancellation.
+   * @returns the object's Ego-State summary entry after the change.
+   */
+  abstract annotate(annotation: Annotation, signal?: AbortSignal): Promise<JsonObject>
 
   /**
    * Execute the plan of a receipt. The runtime re-checks validity, expiry and risk.

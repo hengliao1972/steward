@@ -9,6 +9,8 @@ the World State.
 
 from __future__ import annotations
 
+import base64
+import binascii
 import math
 from typing import Any
 
@@ -207,9 +209,20 @@ def _check_geometry(g: Any, where: str) -> list[str]:
                 not isinstance(s, (int, float)) or s <= 0 for s in size
             ):
                 errors.append(f"{where}: {shape} needs {_SHAPE_SIZE_LEN[shape]} positive size values")
+        if "texture" in g and (shape != "box" or not _is_png_b64(g["texture"])):
+            errors.append(f"{where}: a texture is a base64 PNG on a box")
     elif not isinstance(g.get("ref"), str):
         errors.append(f"{where}: {kind} geometry needs a ref")
     return errors
+
+
+def _is_png_b64(v: Any) -> bool:
+    if not isinstance(v, str):
+        return False
+    try:
+        return base64.b64decode(v[:24], validate=True).startswith(b"\x89PNG")
+    except (binascii.Error, ValueError):  # not base64: rejected as an invalid texture
+        return False
 
 
 def _check_est(est: Any, where: str, value_ok) -> list[str]:

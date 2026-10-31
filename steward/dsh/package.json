@@ -16,6 +16,7 @@
     "@steward/dsh-ego-runtime-client": "workspace:*",
     "@steward/dsh-robot-safety": "workspace:*",
     "@steward/dsh-tool-ego": "workspace:*",
+    "@steward/dsh-tool-ego-capabilities": "workspace:*",
     "@steward/dsh-tool-world": "workspace:*",
     "@types/node": "^24.0.0",
     "typescript": "^6.0.3"

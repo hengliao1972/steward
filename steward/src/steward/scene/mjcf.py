@@ -17,8 +17,12 @@ Deformable bodies are rejected: Phase 0 does not simulate them.
 
 from __future__ import annotations
 
+import base64
+import hashlib
 import math
+import struct
 import xml.etree.ElementTree as ET
+import zlib
 from dataclasses import dataclass, field
 
 import mujoco
@@ -50,9 +54,11 @@ class MjcfBuild:
     xml: str
     names: dict[str, EntityNames]
     initial_qpos: dict[str, list[float]]
+    assets: dict[str, bytes] = field(default_factory=dict)
+    """In-memory files the XML references (texture images)."""
 
     def compile(self) -> mujoco.MjModel:
-        return mujoco.MjModel.from_xml_string(self.xml)
+        return mujoco.MjModel.from_xml_string(self.xml, self.assets or None)
 
     def apply_initial(self, model: mujoco.MjModel, data: mujoco.MjData) -> None:
         """Set initial joint positions and hold position actuators at them."""
@@ -103,19 +109,63 @@ def build_mjcf(
             fovy=f"{cam.get('fovy', 60)}",
         )
     actuators = ET.SubElement(root, "actuator")
+    textures = _Textures(ET.Element("asset"))
     names: dict[str, EntityNames] = {}
     initial: dict[str, list[float]] = {}
     for ent in scene.entities:
         if not isinstance(ent.body, RigidTree):
             raise NotImplementedError(f"entity {ent.id}: deformable bodies are not simulated in Phase 0")
-        names[ent.id] = _emit_entity(world, actuators, ent, initial)
+        names[ent.id] = _emit_entity(world, actuators, ent, initial, textures)
     if len(actuators) == 0:
         root.remove(actuators)
+    if len(textures.element):
+        root.insert(list(root).index(world), textures.element)
     ET.indent(root)
-    return MjcfBuild(xml=ET.tostring(root, encoding="unicode"), names=names, initial_qpos=initial)
+    return MjcfBuild(xml=ET.tostring(root, encoding="unicode"), names=names, initial_qpos=initial,
+                     assets=textures.files)
 
 
-def _emit_entity(world: ET.Element, actuators: ET.Element, ent: Entity, initial: dict) -> EntityNames:
+@dataclass
+class _Textures:
+    """Cube textures for boxes with a top-face image: the image on +z, a plain colour elsewhere.
+    Identical images and colours share one file."""
+
+    element: ET.Element
+    files: dict[str, bytes] = field(default_factory=dict)
+    materials: dict[tuple[str, tuple[float, ...]], str] = field(default_factory=dict)
+
+    def material(self, png_b64: str, rgba: list[float]) -> str:
+        colour = tuple(round(float(c), 4) for c in rgba[:3])
+        key = (hashlib.sha1(png_b64.encode()).hexdigest()[:16], colour)
+        if key in self.materials:
+            return self.materials[key]
+        top = f"tex-{key[0]}.png"
+        image = self.files.setdefault(top, base64.b64decode(png_b64))
+        width, height = struct.unpack(">II", image[16:24])  # PNG IHDR: every cube face has the image's size
+        side = f"side-{width}x{height}-" + "".join(f"{int(c * 255):02x}" for c in colour) + ".png"
+        if side not in self.files:
+            self.files[side] = _solid_png(colour, width, height)
+        name = f"m{len(self.materials)}"
+        ET.SubElement(self.element, "texture", name=name, type="cube", fileup=side, filedown=side, fileleft=side,
+                      fileright=side, filefront=top, fileback=side)
+        ET.SubElement(self.element, "material", name=name, texture=name, rgba="1 1 1 1")
+        self.materials[key] = name
+        return name
+
+
+def _solid_png(colour: tuple[float, ...], width: int, height: int) -> bytes:
+    """A PNG of one RGB colour."""
+    raw = b"".join(b"\x00" + bytes(int(c * 255) for c in colour) * width for _ in range(height))
+
+    def chunk(kind: bytes, data: bytes) -> bytes:
+        return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data) & 0xFFFFFFFF)
+
+    return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0))
+            + chunk(b"IDAT", zlib.compress(raw)) + chunk(b"IEND", b""))
+
+
+def _emit_entity(world: ET.Element, actuators: ET.Element, ent: Entity, initial: dict,
+                 textures: _Textures) -> EntityNames:
     tree = ent.rigid
     names = EntityNames()
     pose = ent.pose.value
@@ -149,13 +199,13 @@ def _emit_entity(world: ET.Element, actuators: ET.Element, ent: Entity, initial:
             ET.SubElement(body, "freejoint", name=jname)
             names.root_joints.append(jname)
     names.bodies[root_link.id] = body_name
-    _emit_link(body, ent, root_link.id, names)
-    _emit_children(body, actuators, ent, root_link.id, names, initial)
+    _emit_link(body, ent, root_link.id, names, textures)
+    _emit_children(body, actuators, ent, root_link.id, names, initial, textures)
     return names
 
 
 def _emit_children(parent_el: ET.Element, actuators: ET.Element, ent: Entity, parent_id: str, names: EntityNames,
-                   initial: dict) -> None:
+                   initial: dict, textures: _Textures) -> None:
     tree = ent.rigid
     for joint in tree.joints:
         if joint.parent != parent_id:
@@ -188,8 +238,8 @@ def _emit_children(parent_el: ET.Element, actuators: ET.Element, ent: Entity, pa
                 lim = joint.limits.value if joint.limits else None
                 names.actuators[joint.id] = _emit_actuator(actuators, jname, jname, joint.actuator, lim)
                 names.actuator_joints[joint.id] = jname
-        _emit_link(body, ent, joint.child, names)
-        _emit_children(body, actuators, ent, joint.child, names, initial)
+        _emit_link(body, ent, joint.child, names, textures)
+        _emit_children(body, actuators, ent, joint.child, names, initial, textures)
 
 
 def _emit_actuator(actuators: ET.Element, name: str, joint: str, act: dict, limits: dict | None) -> str:
@@ -219,7 +269,7 @@ def _emit_actuator(actuators: ET.Element, name: str, joint: str, act: dict, limi
     return name
 
 
-def _emit_link(body: ET.Element, ent: Entity, link_id: str, names: EntityNames) -> None:
+def _emit_link(body: ET.Element, ent: Entity, link_id: str, names: EntityNames, textures: _Textures) -> None:
     link = ent.rigid.link(link_id)
     material = link.material.value if link.material else {}
     collision = link.geometry.get("collision", [])
@@ -229,10 +279,13 @@ def _emit_link(body: ET.Element, ent: Entity, link_id: str, names: EntityNames) 
     total_volume = sum(volumes) or 1.0
     body_name = body.get("name")
     for k, g in enumerate(collision):
-        attrs = _geom_attrs(g)
+        attrs = _geom_attrs(g, textures)
         attrs["name"] = f"{body_name}::c{k}"
         if "friction" in material:
             attrs["friction"] = f"{material['friction']} 0.005 0.0001"
+        if "contactTime" in material:
+            # Stiffer contact (MuJoCo solref time constant): carried contents follow a moving container.
+            attrs["solref"] = f"{max(float(material['contactTime']), 0.004)} 1"
         if mass is not None:
             attrs["mass"] = f"{mass * volumes[k] / total_volume}"
         elif "density" in material:
@@ -244,7 +297,7 @@ def _emit_link(body: ET.Element, ent: Entity, link_id: str, names: EntityNames) 
         ET.SubElement(body, "geom", **attrs)
         names.collision_geoms.append(attrs["name"])
     for k, g in enumerate(visual):
-        attrs = _geom_attrs(g)
+        attrs = _geom_attrs(g, textures)
         attrs.update(name=f"{body_name}::v{k}", contype="0", conaffinity="0", group="1", density="0")
         ET.SubElement(body, "geom", **attrs)
     if not collision and mass is not None:
@@ -260,7 +313,7 @@ def _emit_link(body: ET.Element, ent: Entity, link_id: str, names: EntityNames) 
             names.cameras[sensor["id"]] = cam_name
 
 
-def _geom_attrs(g: dict) -> dict:
+def _geom_attrs(g: dict, textures: _Textures) -> dict:
     if g["kind"] != "primitive":
         raise NotImplementedError(f"{g['kind']} geometry is not simulated in Phase 0")
     shape, size = g["shape"], g["size"]
@@ -276,6 +329,9 @@ def _geom_attrs(g: dict) -> dict:
     attrs = {"type": shape, "size": _fmt(mj_size), "pos": _fmt(at["p"]), "quat": _fmt(at["q"])}
     if "rgba" in g:
         attrs["rgba"] = _fmt(g["rgba"])
+    if "texture" in g:
+        attrs["material"] = textures.material(g["texture"], g.get("rgba", [0.7, 0.7, 0.7, 1.0]))
+        attrs.pop("rgba", None)
     return attrs
 
 

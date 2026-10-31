@@ -18,13 +18,14 @@ from pathlib import Path
 import numpy as np
 
 from steward.ego.classify import classify
-from steward.ego.perception import box_of, decode_rgbd, segments
+from steward.ego.perception import (box_of, decode_rgbd, match_face, resample_face, segments, top_face, top_face_array,
+                                    world_up_face)
 from steward.ego.esim import Esim, EsimConfig
 from steward.ego.estimator import SELF_ID, EgoEstimator
 from steward.ego.roles import RoleConfig, assign_roles
 from steward.ego.skills import MotionConfig, SkillExecutor
 from steward.ego.view import EgoViewRenderer
-from steward.math3d import yaw_from_quat
+from steward.math3d import wrap_angle, yaw_from_quat
 from steward.net import HttpError, call
 from steward.scene.schema import SceneState
 from steward.viewloop import ViewLoop
@@ -34,6 +35,12 @@ from steward.viewloop import ViewLoop
 class RuntimeConfig:
     perception_hz: float = 10.0
     telemetry_hz: float = 2.0
+    appearance_cell_m: float = 0.005  # cell size of the remembered top faces
+    appearance_max_m: float = 0.6  # larger objects' faces are remembered only when asked for
+    appearance_range_m: float = 1.5  # faces farther from the camera are not looked at
+    appearance_interval_s: float = 0.5  # world time between two automatic looks at one face
+    appearance_poll_s: float = 1.0  # wall time between camera images fetched for faces with detections
+    appearance_min_coverage: float = 0.25  # a view showing less of a face is not kept
     max_risk: float = 0.35
     esim: EsimConfig = field(default_factory=EsimConfig)
     motion: MotionConfig = field(default_factory=MotionConfig)
@@ -94,6 +101,8 @@ class RobotLink:
 
 ALERT_TEXT_MAX = 1500
 QUERY_MIN_PROBABILITY = 0.2
+MATCH_REFERENCE_CELLS_MAX = 96  # cells along a reference side for match_face
+MATCH_MIN_COVERAGE = 0.5  # share of a face that must have been seen to match it
 ACTIVITY_MAX = 300
 PLAN_STEP_STATES = frozenset({"pending", "active", "done", "failed", "skipped"})
 
@@ -124,6 +133,8 @@ class EgoRuntime:
                                       shift=self._shift_track, on_error=lambda msg: self.alert(msg, "skill"),
                                       on_finish=self._skill_finished, clock=self.link)
         self._view_scene: tuple[dict, int, float] | None = None  # (ES dict, version, stamp) for the view
+        self.face_error: str | None = None  # why the latest camera image for faces could not be fetched
+        self._face_thread: threading.Thread | None = None
         renderer = EgoViewRenderer()
         self.view = ViewLoop("ego", lambda settings: self._render_view(renderer, settings), renderer.close)
 
@@ -135,14 +146,17 @@ class EgoRuntime:
         self.link.arm("perception", pulls=False)
         self._thread = threading.Thread(target=self._loop, name="ego-perception", daemon=True)
         self._thread.start()
+        self._face_thread = threading.Thread(target=self._face_loop, name="ego-faces", daemon=True)
+        self._face_thread.start()
         self.view.start()
 
     def stop(self) -> None:
         self._running = False
         self.link.closed = True
         self.view.stop()
-        if self._thread is not None:
-            self._thread.join(timeout=2.0)
+        for thread in (self._thread, self._face_thread):
+            if thread is not None:
+                thread.join(timeout=2.0)
 
     def _poll_once(self) -> None:
         frame = self.link.sensors()
@@ -160,6 +174,7 @@ class EgoRuntime:
                 if rgbd["header"]["stamp"] < self.estimator.stamp - 1e-6:
                     self._restart()
                 self.estimator.update_rgbd(rgbd)
+                self._look_at_faces(rgbd)
                 self._publish_view_scene()
             return
         with self._lock:
@@ -167,6 +182,30 @@ class EgoRuntime:
                 self._restart()
             self.estimator.update(frame)
             self._publish_view_scene()
+
+    def _face_loop(self) -> None:
+        """With detections, which carry no colours, fetch a camera image every ``appearance_poll_s``
+        wall seconds while an object whose face is remembered lies within range, and remember the
+        faces it shows. It holds no world clock: perception and control never wait for it."""
+        while self._running:
+            time.sleep(self.config.appearance_poll_s)
+            if self.perception_mode != "detections":
+                continue
+            with self._lock:
+                cam_p = np.asarray(self.estimator.camera_pose()["p"], float)
+                due = any(not t.held and t.footprint <= self.config.appearance_max_m
+                          and float(np.linalg.norm(t.pos - cam_p)) <= self.config.appearance_range_m
+                          for t in self.estimator.tracks.values())
+            if not due:
+                continue
+            try:
+                rgbd = decode_rgbd(self.link.rgbd())
+            except (HttpError, OSError) as exc:
+                self.face_error = f"camera image for faces unavailable: {exc}"
+                continue
+            with self._lock:
+                self._look_at_faces(rgbd)
+            self.face_error = None
 
     def _telemetry_scene(self) -> dict:
         """The Ego-State sent as telemetry, each object carrying its scene-level role as the state
@@ -262,9 +301,9 @@ class EgoRuntime:
             return {"stamp": est.stamp, "odometry": dict(est.odometry), "joints": dict(est.joints),
                     "gripper": dict(est.gripper), "entities": entities, "toolOffset": self.esim.tool_offset}
 
-    def _mark_held(self, track_id: str) -> None:
+    def _mark_held(self, track_id: str) -> str:
         with self._lock:
-            self.estimator.mark_held(track_id)
+            return self.estimator.mark_held(track_id)
 
     def _shift_track(self, track_id: str, delta: list[float]) -> None:
         with self._lock:
@@ -300,6 +339,7 @@ class EgoRuntime:
                 "extentM": self._extent(ent.id),
                 **({"openingM": round(self._opening(ent.id), 3)} if ent.category.value == "drawer" else {}),
                 **self._front(ent),
+                **self._appearance(ent.id),
             })
         with self._lock:
             roles = assign_roles(objects, self.config.roles, self._roles)
@@ -320,6 +360,7 @@ class EgoRuntime:
             "currentSkill": job,
             "perception": self.perception_mode,
             "runtimeError": self.last_error,
+            "faceCaptureError": self.face_error,
         }
 
     def dropped(self) -> list[dict]:
@@ -365,6 +406,144 @@ class EgoRuntime:
             objs = [o for o in objs if o["id"] != near and math.dist(o["position"][:2], anchor["position"][:2]) <= r]
         return objs
 
+    def inspect(self, entity: str, px: int = 24) -> dict:
+        """The top face of an Ego-State object as the head camera sees it now, resampled to a
+        ``px`` × ``px`` grid in the object's own frame: column = local +x to the right, row 0 = local
+        +y (the far edge seen from above). Each cell is ``[r, g, b]`` or ``None`` where the face is
+        out of view or hidden by something nearer. ``worldRows`` is the same grid turned
+        ``worldTurnDeg`` counter-clockwise (:func:`world_up_face`) so that row 0 faces the map's +y.
+        Reads one fresh RGB-D frame; no World State.
+
+        :param entity: Ego-State object id.
+        :param px: grid size, 4 to 64.
+        :returns: ``{entity, px, yawDeg, sizeM, coverage, rows, worldRows, worldTurnDeg, stamp}``.
+        :raises KeyError: unknown object; :raises ValueError: ``px`` out of range."""
+        if not 4 <= px <= 64:
+            raise ValueError("px must be between 4 and 64")
+        with self._lock:
+            track = self.estimator.tracks.get(entity)
+            if track is None:
+                raise KeyError(f"unknown object {entity!r}")
+            centre, size, yaw, top = track.pos.copy(), track.size.copy(), float(track.yaw), track.top()
+        frame = decode_rgbd(self.link.rgbd())
+        with self._lock:
+            cam = self.estimator.camera_pose(frame["header"]["odometry"])
+            self._look_at_faces(frame, [entity])
+        rows = top_face(frame, cam, centre, size, yaw, top, px)
+        seen = sum(cell is not None for row in rows for cell in row)
+        world_rows, turn = world_up_face(rows, yaw)
+        return {"entity": entity, "px": px, "yawDeg": round(math.degrees(yaw), 2),
+                "sizeM": [round(float(v), 3) for v in size], "coverage": round(seen / (px * px), 3),
+                "rows": rows, "worldRows": world_rows, "worldTurnDeg": turn, "stamp": frame["header"]["stamp"]}
+
+    def _look_at_faces(self, frame: dict, ids: list[str] | None = None) -> None:
+        """Remember the top faces one decoded RGB-D frame shows (the caller holds the lock): of
+        ``ids`` of any size, or of every object no larger than ``appearance_max_m`` whose face was
+        not looked at for ``appearance_interval_s``. Only objects within ``appearance_range_m`` are
+        looked at (a distant view would overwrite a sharp one), and a view showing less than
+        ``appearance_min_coverage`` of a face is not kept."""
+        cfg, est = self.config, self.estimator
+        cam = est.camera_pose(frame["header"]["odometry"])
+        cam_p = np.asarray(cam["p"], float)
+        stamp = float(frame["header"]["stamp"])
+        for track in list(est.tracks.values()) if ids is None else [est.tracks[i] for i in ids if i in est.tracks]:
+            if track.held:
+                continue
+            known = track.appearance
+            if float(np.linalg.norm(track.pos - cam_p)) > cfg.appearance_range_m:
+                continue
+            if ids is None and (track.footprint > cfg.appearance_max_m
+                                or (known is not None and not known.stale and stamp - known.stamp < cfg.appearance_interval_s)):
+                continue
+            cols, rows = est.face_grid(track, cfg.appearance_cell_m)
+            rgb = top_face_array(frame, cam, track.pos, track.size, float(track.yaw), track.top(), cols, rows)
+            if np.isfinite(rgb[..., 0]).mean() >= cfg.appearance_min_coverage:
+                est.remember_face(track.id, rgb, stamp)
+
+    def _appearance(self, entity: str) -> dict:
+        with self._lock:
+            track = self.estimator.tracks.get(entity)
+            known = track.appearance if track is not None else None
+            if known is None:
+                return {"appearance": None}
+            return {"appearance": {"seenAgoS": round(self.estimator.stamp - known.stamp, 1),
+                                   "coverage": round(known.coverage, 2), "spread": round(known.spread, 1),
+                                   "stale": known.stale}}
+
+    def match_face(self, entities: list[str], reference: str, px: int = 12) -> dict:
+        """Where the top face of each of ``entities`` appears on the top face of ``reference``
+        printed at the same scale (puzzle pieces on the picture of their box, tiles on a pattern),
+        from the faces the robot remembers (:meth:`_look_at_faces`), refreshed first with one fresh
+        RGB-D frame for those in view. Each face is resampled to ``px`` cells across its shorter
+        side and the reference to cells of the same size, then compared by :func:`match_face`.
+
+        :param entities: Ego-State ids of the objects whose faces are sought.
+        :param reference: Ego-State id of the object showing the whole picture.
+        :param px: cells across each object's shorter side, 4 to 16.
+        :returns: ``{reference, referenceCoverage, results, stamp}``; each result holds ``entity``,
+            ``cellM``, ``spread``, ``faceCoverage``, ``seenAgoS`` and ``matches`` (``offsetM``: the
+            face centre's place in the reference frame from its centre; ``turnDeg``: quarter turns
+            counter-clockwise that align the face with the reference; ``placeYawDeg``: the object
+            heading that does so with the reference's heading; ``score``: correlation, 1 =
+            identical), or ``entity`` and ``error`` when its face is not known well enough.
+        :raises KeyError: unknown object; :raises ValueError: ``px`` out of range or the reference
+            face not known well enough."""
+        if not isinstance(entities, list) or not entities or not all(isinstance(e, str) for e in entities):
+            raise ValueError("entities must be a non-empty list of object ids")
+        if not 4 <= px <= 16:
+            raise ValueError("px must be between 4 and 16")
+        frame = decode_rgbd(self.link.rgbd())
+        with self._lock:
+            est = self.estimator
+            missing = [eid for eid in [*entities, reference] if eid not in est.tracks]
+            if missing:
+                raise KeyError(f"unknown object {missing[0]!r}")
+            self._look_at_faces(frame, [*entities, reference])
+            ref_track = est.tracks[reference]
+            ref = ref_track.appearance
+            if ref is None or ref.stale or ref.coverage < MATCH_MIN_COVERAGE:
+                raise ValueError(f"the face of {reference} is not known well enough "
+                                 f"({0 if ref is None else round(ref.coverage, 2)} seen); look at it from within about a metre")
+            ref_rgb, ref_size, ref_yaw = ref.rgb.copy(), ref_track.size.copy(), float(ref_track.yaw)
+            faces = {}
+            for eid in entities:
+                track = est.tracks[eid]
+                known = track.appearance
+                if known is None or known.stale:
+                    faces[eid] = "its face has not been seen since it was last put down; look at it from within about a metre"
+                elif known.coverage < MATCH_MIN_COVERAGE:
+                    faces[eid] = f"only {known.coverage:.0%} of its face has been seen; look at it from closer or another side"
+                else:
+                    faces[eid] = (known.rgb.copy(), track.size.copy(), round(est.stamp - known.stamp, 1), known.spread)
+        results = []
+        for eid in entities:
+            face = faces[eid]
+            if isinstance(face, str):
+                results.append({"entity": eid, "error": face})
+                continue
+            rgb, size, ago, spread = face
+            cell = float(min(size[0], size[1])) / px
+            ox, oy = max(1, round(size[0] / cell)), max(1, round(size[1] / cell))
+            rx, ry = round(ref_size[0] / cell), round(ref_size[1] / cell)
+            if rx <= max(ox, oy) or ry <= max(ox, oy):
+                results.append({"entity": eid, "error": f"{reference} is not larger than {eid}"})
+                continue
+            if max(rx, ry) > MATCH_REFERENCE_CELLS_MAX:
+                results.append({"entity": eid, "error": f"{reference} spans more than {MATCH_REFERENCE_CELLS_MAX} "
+                                                        f"cells of {cell:.3f} m; use a smaller px"})
+                continue
+            found = match_face(resample_face(rgb, ox, oy), resample_face(ref_rgb, rx, ry))
+            matches = [{"offsetM": [round(float((m["col"] - rx / 2) * ref_size[0] / rx), 3),
+                                    round(float((ry / 2 - m["row"]) * ref_size[1] / ry), 3)],
+                        "turnDeg": 90 * m["turns"],
+                        "placeYawDeg": round(math.degrees(wrap_angle(ref_yaw + m["turns"] * math.pi / 2)), 1),
+                        "score": m["score"]} for m in found["matches"]]
+            results.append({"entity": eid, "cellM": round(cell, 4), "spread": round(spread, 1),
+                            "faceCoverage": round(float(np.isfinite(rgb[..., 0]).mean()), 2), "seenAgoS": ago,
+                            "matches": matches})
+        return {"reference": reference, "referenceCoverage": round(float(np.isfinite(ref_rgb[..., 0]).mean()), 2),
+                "results": results, "stamp": frame["header"]["stamp"]}
+
     def observe(self) -> dict:
         frame = self.link.sensors()
         if frame.get("imaging") == "rgbd":
@@ -395,6 +574,26 @@ class EgoRuntime:
         with self._lock:
             self.receipts[receipt["id"]] = receipt
         return receipt
+
+    def annotate(self, request: dict) -> dict:
+        """Name an Ego-State object as the robot's agent identified it (``label``, ``affordances``).
+
+        :param request: ``{entity, label?, affordances?}``.
+        :returns: the object's summary entry.
+        :raises ValueError: malformed fields; :raises KeyError: no such object."""
+        entity, label, affordances = request.get("entity"), request.get("label"), request.get("affordances")
+        if not isinstance(entity, str):
+            raise ValueError("annotate needs an entity id")
+        if label is not None and (not isinstance(label, str) or not label.strip()):
+            raise ValueError("label must be a non-empty string")
+        if affordances is not None and (not isinstance(affordances, list) or not all(isinstance(a, str) for a in affordances)):
+            raise ValueError("affordances must be a list of strings")
+        with self._lock:
+            if entity not in self.estimator.tracks:
+                raise KeyError(f"unknown object {entity!r}")
+            self.estimator.annotate(entity, label, affordances)
+            self._publish_view_scene()
+        return next(o for o in self.summary()["objects"] if o["id"] == entity)
 
     def receipt(self, receipt_id: str) -> dict:
         if receipt_id not in self.receipts:

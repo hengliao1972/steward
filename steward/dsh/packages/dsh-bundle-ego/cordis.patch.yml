@@ -12,6 +12,17 @@
       name: '@steward/dsh-robot-safety'
       config:
         maxRisk: 0.35
+    - id: steward-tool-ego-capabilities
+      name: '@steward/dsh-tool-ego-capabilities'
+      config:
+        root: !!js "(process.env.DSH_HOME ?? process.env.HOME + '/.dsh') + '/steward-capabilities'"
+
+# The model calls tools from TypeScript programs (run_code): it composes the robot tools into new
+# behaviour for tasks no single tool covers, and saves what worked as capabilities. Programs run in
+# the shared sandbox and reach the robot only through the same tools and safety policy.
+- id: tools
+  config:
+    mode: ptc
 
 # The robot perceives and acts only through ctx.ego. General computer tools inherited from
 # dsh-base would let the model run commands, read files (including simulator data holding

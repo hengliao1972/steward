@@ -28,7 +28,6 @@ from steward.ego.planner import (
     protrusion,
     rects_overlap,
 )
-from steward.ego.priors import prior
 from steward.math3d import yaw_from_quat
 from steward.scene.schema import Entity, SceneState
 
@@ -45,6 +44,8 @@ class EsimConfig:
     lift_max: float = 1.28
     place_edge_margin: float = 0.10
     place_clearance: float = 0.14
+    spot_shift_max: float = 0.3  # an occupied requested spot moves to the nearest free one at most this far
+    spot_shift_step: float = 0.01
     nav_margin: float = 0.03
     floor_furniture_height: float = 0.35
     handle_reach: float = 0.18
@@ -57,6 +58,12 @@ class EsimConfig:
     carry_retreat_max: float = 1.2
     park_keep_clear: float = 0.9
     park_spacing: float = 0.5
+    wrist_yaw_max: float = 3.1
+    wrist_roll_max: float = 2.5
+    pour_roll: float = 1.9
+    pour_clearance: float = 0.02
+    pour_spill: float = 0.25  # how far beyond the container poured contents may slide; the spot keeps that from every edge
+    pour_hold_s: float = 1.5
 
 
 class PredictionError(ValueError):
@@ -129,6 +136,21 @@ class Esim:
                     out.append(ent)
         return out
 
+    def _covering(self, es: SceneState, target: Entity) -> list[str]:
+        """Objects closing ``target`` from above (a lid on a box), judged by geometry: their base is
+        level with its top and their footprint, overlapping it, is at least half as large (smaller
+        objects seen near the rim lie in it)."""
+        tbox, _, top = entity_box(target)
+        out = []
+        for ent in es.entities:
+            if ent.id in (target.id, es.self_id) or ent.role == "environment":
+                continue
+            box, bottom, _ = entity_box(ent)
+            if top - 0.015 <= bottom <= top + 0.03 and rects_overlap(box, tbox) \
+                    and box.hx * box.hy >= 0.5 * tbox.hx * tbox.hy:
+                out.append(ent.id)
+        return out
+
     def _front(self, es: SceneState, ent: Entity) -> Box2D:
         """The entity's footprint with +x pointing out of its front (the face looking into the room)."""
         boxes = [entity_box(e)[0] for e in es.entities if e.id != es.self_id]
@@ -136,7 +158,7 @@ class Esim:
 
     def _opening(self, es: SceneState, drawer: Entity) -> float:
         furniture = [entity_box(e)[0] for e in es.entities
-                     if e.id not in (drawer.id, es.self_id) and "support-surface" in prior(e.category.value)["affordances"]]
+                     if e.id not in (drawer.id, es.self_id) and self._affords(e, "support-surface")]
         return protrusion(self._front(es, drawer), furniture)
 
     def _support_of(self, es: SceneState, ent: Entity) -> Entity | None:
@@ -229,8 +251,10 @@ class Esim:
             length = path_length(path)
             if best is None or length < best["pathLength"]:
                 best = {"path": [list(p) for p in path], "predock": list(predock), "dock": list(dock), "yaw": yaw,
-                        "reach": reach, "pathLength": length,
-                        "clearance": path_clearance(path, obstacles_all) if len(path) > 1 else math.inf}
+                        "reach": reach, "pathLength": length}
+                if len(path) > 1:
+                    # Standing at the pre-dock pose already, there is no path to keep clear.
+                    best["clearance"] = path_clearance(path, obstacles_all)
                 if retreat is not None:
                     best["retreat"] = list(retreat)
         if best is None:
@@ -295,7 +319,7 @@ class Esim:
                 continue
             ebox, bottom, _ = entity_box(ent)
             if bottom < cfg.floor_furniture_height:
-                furniture = "support-surface" in prior(ent.category.value)["affordances"] or self._affords(ent, "pullable")
+                furniture = self._affords(ent, "support-surface") or self._affords(ent, "pullable")
                 others.append((ebox, cfg.park_keep_clear if furniture else 0.3))
         candidates = []
         for x in np.arange(x_lo + reach + 0.05, x_hi - reach - 0.05 + 1e-9, 0.1):
@@ -390,7 +414,9 @@ class Esim:
                 return self._predict_place(es, params)
             if skill in ("open", "close"):
                 return self._predict_drawer(es, skill, params)
-            raise PredictionError(f"unknown skill {skill!r}; known: navigate, pick, place, open, close")
+            if skill == "pour":
+                return self._predict_pour(es, params)
+            raise PredictionError(f"unknown skill {skill!r}; known: navigate, pick, place, pour, open, close")
         except PredictionError as exc:
             blockers = self._describe_blockers(es)
             issues = [str(exc)] + [
@@ -438,9 +464,13 @@ class Esim:
         if support is None and not on_floor:
             raise PredictionError(f"no support surface is known under {target.id}; observe it first")
         tp = target.pose.value["p"]
-        if self._contents(es, target):
-            raise PredictionError(f"{target.id} holds {', '.join(e.id for e in self._contents(es, target))}; "
-                                  "take those out first")
+        contents = self._contents(es, target)
+        if self._affords(target, "pourable"):
+            covering = self._covering(es, target)
+            if covering:
+                raise PredictionError(f"{', '.join(covering)} lies on top of {target.id}; take it off first")
+        elif contents:
+            raise PredictionError(f"{target.id} holds {', '.join(e.id for e in contents)}; take those out first")
         anchor = target if on_floor else self._anchor(es, support)
         approach = self._approach(es, anchor, (tp[0], tp[1]), tp[2], {target.id}, load=target if on_floor else None)
         sigma = math.hypot(self._sigma_xy(target), self._sigma_xy(self._self(es)))
@@ -456,7 +486,8 @@ class Esim:
         risk = 1.0 - (1.0 - p_miss) * (1.0 - existence_risk)
         carry_lift = tp[2] + (self.config.floor_carry_lift if on_floor else 0.10)
         plan = {**approach, "target": target.id, "support": "floor" if on_floor else support.id, "lift": tp[2],
-                "carryLift": min(self.config.lift_max, carry_lift), "captureRadius": self.config.capture_radius}
+                "carryLift": min(self.config.lift_max, carry_lift), "captureRadius": self.config.capture_radius,
+                "gentle": self._affords(target, "pourable")}
         return self._receipt(es, "pick", params, risk, issues, plan)
 
     def _predict_place(self, es: SceneState, params: dict) -> dict:
@@ -486,7 +517,9 @@ class Esim:
                 issues.append(f"only {clearance * 100:.1f} cm of clearance with {sigma * 100:.1f} cm uncertainty")
         elif self._affords(support, "support-surface"):
             sbox, _, top = entity_box(support)
-            spot, issues = self._choose_spot(es, support, sbox, held, held_box, params.get("offset"))
+            final_yaw = float(params["yaw"]) if params.get("yaw") is not None else held_box.yaw
+            spot, issues = self._choose_spot(es, support, sbox, held, held_box, params.get("offset"),
+                                             final_yaw, float(params.get("clearance", 0.015)))
             area = sbox
             height = top + held_h / 2 + 0.02
             edge = self._edge_distance(sbox, spot) - held_half
@@ -503,7 +536,60 @@ class Esim:
         plan = {**approach, "object": held.id, "support": support.id, "spot": list(spot), "lift": height,
                 "supportBox": {"cx": area.cx, "cy": area.cy, "yaw": area.yaw, "hx": area.hx, "hy": area.hy},
                 "heldHalf": held_half}
+        if params.get("yaw") is not None:
+            plan["wristYaw"] = self._wrist_for(es, held, float(params["yaw"]), approach["yaw"], bool(params.get("flip")))
+        if params.get("flip"):
+            plan["wristRoll"] = math.pi  # turned over about the arm axis before it is set down
+        plan["gentle"] = self._affords(held, "pourable")
         return self._receipt(es, "place", params, risk, issues, plan)
+
+    def _wrist_for(self, es: SceneState, held: Entity, yaw: float, dock_yaw: float, flip: bool = False) -> float:
+        """Wrist yaw that sets the held object down at heading ``yaw`` with the base at ``dock_yaw``.
+        Turning it over (``flip``: a half roll about the gripper axis at heading a) maps a heading h
+        to 2a - h, so the object's offset from the gripper axis changes sign."""
+        _, _, ryaw = self._robot_xy_yaw(es)
+        wrist = next((j.q.value[0] for j in self._self(es).rigid.joints if j.id == "wrist_yaw" and j.q.value), 0.0)
+        relative = yaw_from_quat(held.pose.value["q"]) - ryaw - wrist
+        target = _wrap(yaw - dock_yaw + relative) if flip else _wrap(yaw - dock_yaw - relative)
+        if abs(target) > self.config.wrist_yaw_max:
+            raise PredictionError(f"heading {math.degrees(yaw):.0f} deg needs a wrist turn of {math.degrees(target):.0f} deg, "
+                                  f"beyond +-{math.degrees(self.config.wrist_yaw_max):.0f}")
+        return target
+
+    def _predict_pour(self, es: SceneState, params: dict) -> dict:
+        """Tip the held ``pourable`` container over a support surface so its contents fall out
+        there, then hold it upright again (the container stays in the gripper)."""
+        held = self._held(es)
+        if held is None:
+            raise PredictionError("the gripper is not holding anything")
+        if not self._affords(held, "pourable"):
+            raise PredictionError(f"{held.id} ({held.category.value}) cannot be poured")
+        support = es.find(params.get("on", ""))
+        if support is None or not self._affords(support, "support-surface"):
+            raise PredictionError(f"unknown support surface {params.get('on')!r}")
+        sbox, _, top = entity_box(support)
+        held_box, hb, ht = entity_box(held)
+        # Contents slide out up to pour_spill beyond the container: the spot keeps them on the surface.
+        spill = max(held_box.hx, held_box.hy) + self.config.pour_spill
+        if min(sbox.hx, sbox.hy) < spill:
+            raise PredictionError(f"{support.id} is too small to pour {held.id} on: the contents could slide over "
+                                  f"its edge (a spot {spill:.2f} m from every edge is needed)")
+        spot, issues = self._choose_spot(es, support, sbox, held, held_box, params.get("offset"), held_box.yaw,
+                                         float(params.get("clearance", 0.015)), edge_keep=spill)
+        height = top + (ht - hb) / 2 + self.config.pour_clearance
+        approach = self._approach(es, self._anchor(es, support), spot, height, {held.id})
+        roll = float(params.get("roll", self.config.pour_roll))
+        if not (0.3 <= abs(roll) <= self.config.wrist_roll_max):
+            raise PredictionError(f"roll {roll:.2f} rad is outside [0.3, {self.config.wrist_roll_max}]")
+        # The container tips about its edge across the arm: half its extent across the docked heading.
+        rel = held_box.yaw - approach["yaw"]
+        pivot = abs(math.sin(rel)) * held_box.hx + abs(math.cos(rel)) * held_box.hy
+        if height + pivot > self.config.lift_max:
+            raise PredictionError(f"tipping {held.id} about its edge needs a lift of {height + pivot:.2f} m, "
+                                  f"above {self.config.lift_max} m")
+        plan = {**approach, "object": held.id, "support": support.id, "spot": list(spot), "lift": height,
+                "roll": roll, "pivot": pivot, "pourS": self.config.pour_hold_s, "gentle": True}
+        return self._receipt(es, "pour", params, 0.1, issues, plan)
 
     def _predict_floor_place(self, es: SceneState, held: Entity, params: dict) -> dict:
         """Put the held object down on the floor with its centre at ``at``: stand behind the spot
@@ -666,8 +752,15 @@ class Esim:
         return min(sbox.hx - abs(lx), sbox.hy - abs(ly))
 
     def _choose_spot(self, es: SceneState, support: Entity, sbox: Box2D, held: Entity, held_box: Box2D,
-                     offset: list | None) -> tuple[tuple[float, float], list[str]]:
+                     offset: list | None, yaw: float | None = None,
+                     clearance: float = 0.015, edge_keep: float | None = None) -> tuple[tuple[float, float], list[str]]:
+        """A spot for ``held`` on ``support``: ``offset`` in the support frame if given, else the free
+        spot nearest the robot. A requested spot where the held footprint, turned to ``yaw``, would
+        come within ``clearance`` of another object moves to the free spot nearest it, at most
+        ``spot_shift_max`` away, and an issue says where; none that near is an error. Every spot
+        keeps ``edge_keep`` (default: the held object's half extent) from the support's edges."""
         cfg = self.config
+        keep = max(held_box.hx, held_box.hy) if edge_keep is None else edge_keep
         others = []
         for rel in es.relations:
             if rel.type == "supported-by" and rel.b.get("entity") == support.id and rel.a["entity"] != held.id:
@@ -681,15 +774,37 @@ class Esim:
 
         if offset is not None:
             spot = world(float(offset[0]), float(offset[1]))
-            if self._edge_distance(sbox, spot) < max(held_box.hx, held_box.hy):
-                raise PredictionError("requested offset puts the object over the edge")
-            held_half = max(held_box.hx, held_box.hy)
-            for o in others:
-                if math.hypot(spot[0] - o.cx, spot[1] - o.cy) < held_half + max(o.hx, o.hy) + 0.015:
-                    raise PredictionError(f"requested spot is occupied by {o.id}")
-            return spot, []
+            if self._edge_distance(sbox, spot) < keep:
+                raise PredictionError(f"requested offset is within {keep:.2f} m of the edge of {support.id}")
+            if clearance <= 0.0:
+                # The caller allows contact or overlap (interlocking pieces, stacking): the spot stands.
+                return spot, []
+            sigma = self._sigma_xy(held)
+            hx = max(held_box.hx - 2 * sigma, 0.01) + clearance / 2
+            hy = max(held_box.hy - 2 * sigma, 0.01) + clearance / 2
+            heading = held_box.yaw if yaw is None else yaw
+            grown = [Box2D(o.id, o.cx, o.cy, o.yaw, o.hx + clearance / 2, o.hy + clearance / 2) for o in others]
+
+            def blocker(xy: tuple[float, float]) -> str | None:
+                placed = Box2D(held.id, xy[0], xy[1], heading, hx, hy)
+                return next((o.id for o in grown if rects_overlap(placed, o)), None)
+
+            occupant = blocker(spot)
+            if occupant is None:
+                return spot, []
+            step, reach = cfg.spot_shift_step, cfg.spot_shift_max
+            ticks = np.arange(-reach, reach + 1e-9, step)
+            shifts = sorted(((float(dx), float(dy)) for dx in ticks for dy in ticks if math.hypot(dx, dy) <= reach),
+                            key=lambda d: math.hypot(*d))
+            for dx, dy in shifts:
+                moved = (spot[0] + dx, spot[1] + dy)
+                if self._edge_distance(sbox, moved) >= keep and blocker(moved) is None:
+                    return moved, [f"requested spot is occupied by {occupant}; using the free spot nearest it, "
+                                   f"{math.hypot(dx, dy) * 100:.0f} cm away at ({moved[0]:.3f}, {moved[1]:.3f})"]
+            raise PredictionError(f"requested spot is occupied by {occupant} and no free spot lies within "
+                                  f"{reach:.2f} m of it")
         rx, ry, _ = self._robot_xy_yaw(es)
-        margin = cfg.place_edge_margin + max(held_box.hx, held_box.hy)
+        margin = max(cfg.place_edge_margin + max(held_box.hx, held_box.hy), keep)
         best, best_cost = None, math.inf
         for lx in np.arange(-sbox.hx + margin, sbox.hx - margin + 1e-9, 0.05):
             for ly in np.arange(-sbox.hy + margin, sbox.hy - margin + 1e-9, 0.05):
