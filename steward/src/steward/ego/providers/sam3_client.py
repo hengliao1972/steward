@@ -21,11 +21,28 @@ except ImportError:  # pragma: no cover
 
 
 # Promptable Concept Segmentation prompts used in local Phase-1 ablations.
-DEFAULT_PCS_PROMPTS: list[str] = [
+# LinxLab /api/segment requires each prompt to be an object (e.g. {"text": "cup"}).
+DEFAULT_PCS_TEXTS: list[str] = [
     "cup", "mug", "bowl", "plate", "dish",
     "table", "counter", "cabinet", "drawer", "chair",
     "object", "container",
 ]
+DEFAULT_PCS_PROMPTS: list[dict] = [{"text": t} for t in DEFAULT_PCS_TEXTS]
+
+
+def normalize_prompts(prompts: list | None) -> list[dict]:
+    """Accept ``["cup"]`` or ``[{"text": "cup"}]``; always emit API objects."""
+    if not prompts:
+        return list(DEFAULT_PCS_PROMPTS)
+    out: list[dict] = []
+    for p in prompts:
+        if isinstance(p, str):
+            out.append({"text": p})
+        elif isinstance(p, dict):
+            out.append(p)
+        else:
+            raise TypeError(f"prompt must be str or dict, got {type(p).__name__}")
+    return out
 
 
 @dataclass
@@ -34,7 +51,7 @@ class Sam3Config:
     threshold: float = 0.28
     min_pixels: int = 25
     timeout_s: float = 180.0
-    prompts: list[str] = field(default_factory=lambda: list(DEFAULT_PCS_PROMPTS))
+    prompts: list[dict] = field(default_factory=lambda: list(DEFAULT_PCS_PROMPTS))
 
 
 class Sam3Client:
@@ -49,12 +66,13 @@ class Sam3Client:
             if r.ok:
                 body = r.json() if r.headers.get("content-type", "").startswith("application/json") else {}
                 return body.get("status", "ready") in ("ready", "ok", True) or r.ok
-            r = requests.get(f"{self.config.base_url.rstrip('/')}/", timeout=15)
-            return r.ok
+            # Prefer /api/health when /health/ready is absent.
+            r = requests.get(f"{self.config.base_url.rstrip('/')}/api/health", timeout=15)
+            return r.ok and (r.json().get("status") == "ready" if r.headers.get("content-type", "").startswith("application/json") else r.ok)
         except Exception:
             return False
 
-    def segment(self, rgb: np.ndarray, *, prompts: list[str] | None = None,
+    def segment(self, rgb: np.ndarray, *, prompts: list | None = None,
                 threshold: float | None = None) -> dict:
         """POST RGB → JSON with per-prompt mask lists (base64 PNG)."""
         cfg = self.config
@@ -64,7 +82,7 @@ class Sam3Client:
             f"{cfg.base_url.rstrip('/')}/api/segment",
             files={"file": ("frame.png", buf.getvalue(), "image/png")},
             data={"options": json.dumps({
-                "prompts": prompts or cfg.prompts,
+                "prompts": normalize_prompts(prompts if prompts is not None else cfg.prompts),
                 "threshold": float(cfg.threshold if threshold is None else threshold),
             })},
             timeout=cfg.timeout_s,
@@ -72,7 +90,7 @@ class Sam3Client:
         r.raise_for_status()
         return r.json()
 
-    def masks_from_rgb(self, rgb: np.ndarray, *, prompts: list[str] | None = None,
+    def masks_from_rgb(self, rgb: np.ndarray, *, prompts: list | None = None,
                        threshold: float | None = None) -> np.ndarray:
         """Anonymous uint8 instance mask (0 = background), same contract as geometric masks."""
         return results_to_mask(self.segment(rgb, prompts=prompts, threshold=threshold),
