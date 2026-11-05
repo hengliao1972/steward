@@ -145,7 +145,8 @@ def test_depth_clusters_sam_missed_become_unnamed_instances_and_found_ones_are_n
     sam[30:50, 40:60] = 1
     seg = Segmentation(sam, {1: {"bowl": 0.8}})
     up = np.array([0.0, 0.0, 1.0])
-    filled = Segmenter(SegmenterConfig(vocabulary=VOCAB, min_pixels=20, geometric_fill=True), None).fill(seg, depth, 58.0, up)
+    filled = Segmenter(SegmenterConfig(vocabulary=VOCAB, min_pixels=20, geometric_fill=True,
+                                       fill_supports_only=False), None).fill(seg, depth, 58.0, up)
     assert filled.labels == seg.labels, "filled instances carry no names"
     assert (filled.mask[30:50, 40:60] == 1).all(), "what SAM found keeps its instance"
     missed = filled.mask[30:50, 100:120]
