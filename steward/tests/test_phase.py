@@ -475,6 +475,106 @@ def test_two_raised_objects_in_one_segmenter_mask_become_two_tracks():
     assert not any(t.category == "drawer" for t in after.tracks.values())
 
 
+def test_two_objects_on_a_wide_tabletop_mask_become_two_tracks():
+    """A bowl and a glass painted onto one table-top region stay one region without labels. With
+    labels, the two raised clusters become two tracks and the slab does not become a third."""
+    from steward.ego.perception import segments
+
+    header = {"stamp": 1.0, "odometry": {"x": 0.0, "y": 0.0, "yaw": 0.0},
+              "joints": {"lift": 0.4, "reach": 0.0, "wrist_yaw": 0.0, "wrist_roll": 0.0},
+              "gripper": {"state": "open", "holding": False}}
+    cam = EgoEstimator(robot_model=steward_bot().to_dict()).camera_pose(header["odometry"])
+    h, w, fovy = 120, 160, 60.0
+    depth = np.zeros((h, w), np.float32)
+    mask = np.zeros((h, w), np.uint8)
+    rng = np.random.default_rng(2)
+    slab = np.column_stack([rng.uniform(1.25, 1.35, 600), rng.uniform(-0.42, 0.42, 600),
+                            rng.uniform(0.74, 0.76, 600)])
+    bowl = np.column_stack([rng.uniform(1.22, 1.32, 90), rng.uniform(-0.36, -0.22, 90),
+                            rng.uniform(0.80, 0.86, 90)])
+    glass = np.column_stack([rng.uniform(1.22, 1.30, 90), rng.uniform(0.24, 0.34, 90),
+                             rng.uniform(0.80, 0.96, 90)])
+    _paint(depth, mask, cam, fovy, np.vstack([slab, bowl, glass]), 1)
+    bare = {"depth": depth, "mask": mask, "rgb": np.full((h, w, 3), 150, np.uint8), "fovy": fovy,
+            "header": header, "camera": "head_camera"}
+    assert len(segments(bare, cam)) == 1
+    named = dict(bare)
+    named["labels"] = {1: {"bowl": 0.4}}
+    assert len(segments(named, cam)) == 2
+
+
+def test_a_bowl_measured_with_the_table_shrinks_to_the_bowl_and_is_not_completed_as_a_drawer():
+    """Table points around a bowl make a wide shallow cloud. The track keeps the bowl, so the
+    drawer prior does not stretch it to a drawer's height."""
+    from steward.ego.estimator import _voxelize
+
+    est = EgoEstimator(robot_model=steward_bot().to_dict())
+    rng = np.random.default_rng(5)
+    slab = np.column_stack([rng.uniform(0.40, 0.95, 180), rng.uniform(-1.18, -0.98, 180),
+                            rng.uniform(0.74, 0.76, 180)])
+    bowl = np.column_stack([rng.uniform(0.62, 0.80, 70), rng.uniform(-1.16, -1.00, 70),
+                            rng.uniform(0.79, 0.85, 70)])
+    track = _remembered("e:1", "drawer", [0.67, -1.08, 0.80], [0.55, 0.22, 0.22])
+    track.voxels = _voxelize(np.vstack([slab, bowl]))
+    track.mean_rgb = np.array([0.2, 0.55, 0.2])
+    track.bottom_seen = True
+    est.tracks = {"e:1": track}
+    est._rebuild_geometry(track, np.array([-1.6, -1.3, 1.2]), 2.0)
+    assert track.category == "bowl"
+    assert max(track.size[0], track.size[1]) < 0.34
+    assert track.size[2] < 0.15
+
+
+def test_two_names_for_one_glass_merge_and_two_bowls_stay_apart():
+    est = EgoEstimator(robot_model=steward_bot().to_dict())
+    est.tracks = {
+        "e:1": _remembered("e:1", "cup", [0.47, -1.12, 0.84], [0.08, 0.07, 0.17]),
+        "e:2": _remembered("e:2", "bowl", [0.48, -1.12, 0.84], [0.12, 0.08, 0.17]),
+        "e:3": _remembered("e:3", "bowl", [0.24, -1.07, 0.78], [0.31, 0.31, 0.08]),
+        "e:4": _remembered("e:4", "bowl", [0.71, -1.07, 0.79], [0.27, 0.20, 0.08]),
+    }
+    est._merge_same_place(np.zeros(3))
+    assert "e:2" not in est.tracks and "e:1" in est.tracks
+    assert {"e:3", "e:4"} <= set(est.tracks)
+
+
+def test_a_shallow_bowl_beside_a_glass_splits_out_of_the_table_mask():
+    """The green bowl is a short bump on the same mask as the glass, with table points on its side
+    of the gap. The gap split keeps the bump and the glass, not the table."""
+    from steward.ego.perception import _raised_cluster_indices
+
+    rng = np.random.default_rng(4)
+    glass = np.column_stack([rng.uniform(0.40, 0.48, 90), rng.uniform(-1.16, -1.08, 90),
+                             rng.uniform(0.78, 0.92, 90)])
+    bowl = np.column_stack([rng.uniform(0.62, 0.82, 80), rng.uniform(-1.16, -1.00, 80),
+                            rng.uniform(0.78, 0.84, 80)])
+    table = np.column_stack([rng.uniform(0.78, 0.98, 50), rng.uniform(-1.20, -0.98, 50),
+                             rng.uniform(0.74, 0.76, 50)])
+    split = _raised_cluster_indices(np.vstack([table, bowl, glass]), 20)
+    assert split is not None and len(split) == 2
+    widths = sorted(float(np.max(pts[:, 0]) - np.min(pts[:, 0])) for pts in
+                    (np.vstack([table, bowl, glass])[idx] for idx in split))
+    assert widths[0] < 0.15 and widths[1] < 0.32
+
+
+def test_a_drawer_on_a_counter_top_is_dropped_and_one_inside_a_cabinet_stays():
+    """A short slab beside the cup is the counter top. The cabinet's own drawer, and a taller
+    drawer-shaped track on a table, stay."""
+    est = EgoEstimator(robot_model=steward_bot().to_dict())
+    est.tracks = {
+        "e:1": _remembered("e:1", "counter", [0.0, 0.0, 0.45], [1.8, 0.6, 0.9]),
+        "e:2": _remembered("e:2", "drawer", [-0.4, 0.1, 0.95], [0.46, 0.22, 0.11]),
+        "e:5": _remembered("e:5", "cup", [-0.45, 0.0, 0.95], [0.08, 0.08, 0.10]),
+        "e:3": _remembered("e:3", "cabinet", [2.0, 0.0, 0.4], [0.62, 0.52, 0.8]),
+        "e:4": _remembered("e:4", "drawer", [2.0, 0.0, 0.65], [0.56, 0.44, 0.22]),
+        "e:6": _remembered("e:6", "table", [0.6, -0.9, 0.38], [1.16, 0.79, 0.75]),
+        "e:7": _remembered("e:7", "drawer", [0.72, -1.07, 0.86], [0.58, 0.25, 0.22]),
+    }
+    est._drop_support_top_drawers()
+    assert "e:2" not in est.tracks
+    assert set(est.tracks) == {"e:1", "e:5", "e:3", "e:4", "e:6", "e:7"}
+
+
 def test_a_mask_mixing_near_and_far_surfaces_does_not_start_a_wide_track():
     est = EgoEstimator(robot_model=steward_bot().to_dict())
     header = {"stamp": 1.0, "odometry": {"x": 0.0, "y": 0.0, "yaw": 0.0},

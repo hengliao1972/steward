@@ -24,7 +24,7 @@ from dataclasses import dataclass, field
 import numpy as np
 
 from steward.ego.classify import SHAPES, classify, fuse_semantics, prototype
-from steward.ego.perception import box_at_yaw, box_of, segments
+from steward.ego.perception import box_at_yaw, box_of, raised_object_points, segments
 from steward.ego.planner import Box2D, front_box, protrusion, room_centre
 from steward.ego.priors import compatible, prior
 from steward.math3d import (matrix_from_quat, pose_compose, pose_inverse, quat_from_axis_angle, quat_from_yaw,
@@ -195,6 +195,7 @@ class EgoEstimator:
         self.version = 0
         self.stamp = 0.0
         self.held_since = 0.0  # body time the current load was grasped at
+        self.posed = False
         self.odometry = {"x": 0.0, "y": 0.0, "yaw": 0.0, "sigma": {"pos": 0.01, "yaw": 0.01}}
         self.joints: dict[str, float] = {}
         self.gripper = {"state": "open", "holding": False}
@@ -368,6 +369,7 @@ class EgoEstimator:
     # ----------------------------------------------------------------- update
     def update(self, frame: dict) -> None:
         self.stamp = float(frame["stamp"])
+        self.posed = True
         self.odometry = frame["odometry"]
         self.joints = frame["joints"]
         self._read_grippers(frame)
@@ -412,6 +414,7 @@ class EgoEstimator:
         """Follow the robot's own state (stamp, odometry, joints, gripper) from a sensor header
         without imaging: between two segmented frames, what the gripper holds moves with it."""
         self.stamp = float(header["stamp"])
+        self.posed = True
         self.odometry = header["odometry"]
         self.joints = header["joints"]
         self.gripper = header["gripper"]
@@ -443,6 +446,7 @@ class EgoEstimator:
         """
         header = frame["header"]
         self.stamp = float(header["stamp"])
+        self.posed = True
         self.odometry = header["odometry"]
         self.joints = header["joints"]
         self._read_grippers(header)
@@ -540,7 +544,9 @@ class EgoEstimator:
         self._dedupe_furniture(cam_p)
         self._merge_rim_fragments()
         self._fold_furniture_slices(cam_p)
+        self._drop_support_top_drawers()
         self._merge_same_surface(cam_p)
+        self._merge_same_place(cam_p)
         self._merge_walls(cam_p)
         self._drop_impossible(cam_p)
         self._drop_orphan_parts()
@@ -807,6 +813,38 @@ class EgoEstimator:
                 self._drop(drop, "merged: same surfaces", into=keep)
                 self._rebuild_geometry(keep, cam_p, 2.0)
 
+    def _merge_same_place(self, cam_p: np.ndarray) -> None:
+        """Fold two small raised tracks whose centres are within 8 cm into one.
+
+        A bowl and the glass beside it are further apart than that. Two segmenter names for the
+        same object, or the tight object and the wider slab it was cut out of, are not. The tighter
+        cloud is the one kept: the wider one is the table that was boxed with it."""
+        small = [t for t in self.tracks.values()
+                 if not t.held and not t.carried and t.footprint < 0.45 and t.bottom() > 0.3]
+        for i, a in enumerate(small):
+            for b in small[i + 1:]:
+                if a.id not in self.tracks or b.id not in self.tracks:
+                    continue
+                if float(np.linalg.norm(a.pos[:2] - b.pos[:2])) > 0.08:
+                    continue
+                if abs(a.bottom() - b.bottom()) > 0.08 and abs(a.top() - b.top()) > 0.08:
+                    continue
+                # A lid and the box under it share a centre, and each end is within a few centimetres,
+                # but their bodies do not meet. Two names for one object overlap in height.
+                if min(a.top(), b.top()) < max(a.bottom(), b.bottom()) - 0.01:
+                    continue
+                keep, drop = (a, b) if _tighter(a, b) else (b, a)
+                for cat, n in drop.category_counts.items():
+                    keep.category_counts[cat] = keep.category_counts.get(cat, 0.0) + n
+                _absorb_semantics(keep, drop)
+                for col, n in drop.color_counts.items():
+                    keep.color_counts[col] = keep.color_counts.get(col, 0.0) + n
+                keep.observations += drop.observations
+                keep.existence = max(keep.existence, drop.existence)
+                self._drop(drop, "merged: two names for one object", into=keep)
+                if keep.voxels is not None:
+                    self._rebuild_geometry(keep, cam_p, 2.0)
+
     def _merge_walls(self, cam_p: np.ndarray) -> None:
         """Join wall tracks that lie in one plane and meet or nearly meet along it: separate views
         of one wall, each cut by the image border."""
@@ -919,6 +957,29 @@ class EgoEstimator:
             self._drop(small, "merged: slice of the furniture", into=host)
             if host.voxels is not None:
                 self._rebuild_geometry(host, cam_p, 2.0)
+
+    def _drop_support_top_drawers(self) -> None:
+        """Drop a short wide ``drawer`` sitting on a support beside an object already tracked.
+
+        A closed drawer is inside the furniture, so its base is well below the top. A shallow slab
+        of the support's own top, shorter than a drawer and centred within 25 cm of a cup, bowl,
+        plate, mug or glass, is that top boxed again. A taller track is left alone: the green bowl
+        is boxed about 22 cm tall and is the object, not a second copy of one."""
+        hosts = [t for t in self.tracks.values()
+                 if t.category in ("counter", "table", "cabinet", "sideboard") and t.footprint >= 0.4]
+        small = [t for t in self.tracks.values()
+                 if t.category in ("cup", "bowl", "plate", "mug", "wine_glass") and t.footprint < 0.3]
+        for track in list(self.tracks.values()):
+            if track.held or track.carried or track.category != "drawer" or track.footprint < 0.3:
+                continue
+            if float(track.size[2]) >= 0.16:
+                continue
+            base = track.bottom()
+            on_top = any(_inside(host, track.pos, 0.08) and abs(base - host.top()) <= 0.08
+                         for host in hosts if host.id != track.id)
+            beside = any(float(np.linalg.norm(track.pos[:2] - other.pos[:2])) <= 0.25 for other in small)
+            if on_top and beside:
+                self._drop(track, "support top boxed as a drawer")
 
     def _new_cloud_track(self, m: dict, cam_p: np.ndarray) -> Track:
         track = Track(id=f"e:{next(self._ids)}", category_counts=dict(m["probs"]), pos=m["centre"].copy(),
@@ -1033,7 +1094,12 @@ class EgoEstimator:
             low = pts[:, 2] <= cap
             if not low.all() and int(low.sum()) >= 10:
                 track.voxels = _voxelize(pts[low])
-        centre, size, yaw = box_of(_points(track.voxels), trim=0.01)
+        cloud = _points(track.voxels)
+        core = raised_object_points(cloud)
+        if core is not None:
+            track.voxels = _voxelize(core)
+            cloud = _points(track.voxels)
+        centre, size, yaw = box_of(cloud, trim=0.01)
         if track.span is not None:
             # The sample keeps the surfaces that hold most of the points. A wide top's far edge is
             # real but only a few percent of the pixels, so the sampled box loses decimetres of
@@ -1071,7 +1137,11 @@ class EgoEstimator:
         shift = np.zeros(3)
         completion = 0.0
         total = sum(track.category_counts.values())
-        if proto is not None and track.category_counts[track.category] / total > 0.6:
+        measured_bottom = float(centre[2] - size[2] / 2)
+        # A shallow cloud resting high up is the table top boxed with a bowl, not a drawer front.
+        # Completing it to a drawer's size is what makes that bowl a 22 cm drawer.
+        shallow_top = track.category == "drawer" and float(size[2]) < 0.12 and measured_bottom > 0.65
+        if proto is not None and not shallow_top and track.category_counts[track.category] / total > 0.6:
             long_side, short_side, height = proto
             axes = [(0, long_side, np.array([math.cos(yaw), math.sin(yaw), 0.0])),
                     (1, short_side, np.array([-math.sin(yaw), math.cos(yaw), 0.0]))]
@@ -1117,8 +1187,9 @@ class EgoEstimator:
             # surface (or receptacle floor) just below its visible part.
             level = self._resting_level(track, centre, bottom)
             if level is not None and level < bottom:
-                size[2] += bottom - level
-                centre[2] -= (bottom - level) / 2
+                gap = bottom - level
+                size[2] += gap
+                centre[2] -= gap / 2
         track.pos = centre
         track.size = size
         track.yaw = yaw
@@ -1834,6 +1905,19 @@ def _absorb_span(keep: Track, drop: Track) -> None:
     if drop.span is None:
         return
     keep.span = _larger_span(keep.span, drop.span)
+
+
+def _tighter(a: Track, b: Track) -> bool:
+    """Whether ``a`` is the object and ``b`` is a flat or wider duplicate of it.
+
+    A rim a couple of centimetres tall is the top of the cup, not a better box than the cup.
+    Otherwise the smaller footprint is the object cut off the table, and the wider one is the table.
+    """
+    if a.size[2] >= 0.04 > b.size[2]:
+        return True
+    if b.size[2] >= 0.04 > a.size[2]:
+        return False
+    return a.footprint <= b.footprint
 
 
 def _absorb_semantics(keep: Track, drop: Track) -> None:
