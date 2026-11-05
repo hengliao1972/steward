@@ -770,8 +770,13 @@ class Esim:
             raise PredictionError("the gripper must be empty to use a handle")
         _, bottom, top = entity_box(drawer)
         box = self._front(es, drawer)
-        n = (math.cos(box.yaw), math.sin(box.yaw))
-        handle = [box.cx + n[0] * (box.hx - 0.015), box.cy + n[1] * (box.hx - 0.015), (bottom + top) / 2]
+        n = tuple(params["axis"]) if params.get("axis") else (math.cos(box.yaw), math.sin(box.yaw))
+        # A look along the open drawer can shift the estimated box. The handle just pulled, moved
+        # by that pull, is the one to push back.
+        if params.get("handle"):
+            handle = [float(v) for v in params["handle"]]
+        else:
+            handle = [box.cx + n[0] * (box.hx - 0.015), box.cy + n[1] * (box.hx - 0.015), (bottom + top) / 2]
         opening = self._opening(es, drawer)
         if skill == "open":
             if opening > 0.2:
@@ -779,9 +784,16 @@ class Esim:
             distance = min(max(float(params.get("distance", cfg.drawer_pull)), 0.05), cfg.drawer_pull_max)
             sign = 1.0
         else:
-            if opening < 0.05:
+            # The look into an open drawer rebuilds the box, and the opening left on the track can
+            # shrink to a few centimetres while the drawer is still out. The distance just pulled
+            # is the one that puts it back.
+            requested = params.get("distance")
+            if opening < 0.05 and requested is None:
                 raise PredictionError(f"{drawer.id} is already closed")
-            distance = min(opening + 0.02, cfg.drawer_pull_max + 0.04)
+            if requested is None:
+                distance = min(opening + 0.02, cfg.drawer_pull_max + 0.04)
+            else:
+                distance = min(max(float(requested), 0.05), cfg.drawer_pull_max + 0.04)
             sign = -1.0
         standoff = self.tool_offset + cfg.handle_reach
         dock = (handle[0] + n[0] * standoff, handle[1] + n[1] * standoff)
@@ -791,7 +803,7 @@ class Esim:
         yaw = math.atan2(-n[1], -n[0])
         if not (cfg.lift_min <= handle[2] <= cfg.lift_max):
             raise PredictionError(f"handle height {handle[2]:.2f} m is outside the lift range")
-        obstacles = self._floor_obstacles(es, set())
+        obstacles = self._floor_obstacles(es, {drawer.id})
         for name, xy in (("dock", dock), ("end", end), ("viewing", clear)):
             blocked = self._footprint_blocked(obstacles, xy, yaw)
             if blocked:

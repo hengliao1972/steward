@@ -215,3 +215,152 @@ def test_at_the_table_edge_the_wide_camera_reads_the_face_the_head_camera_cannot
     finally:
         runtime.stop()
         host.stop()
+
+
+def test_depth_on_the_robot_body_is_left_out_of_the_fill():
+    runtime = _offline()
+    intr = runtime.estimator.camera_intrinsics("wide_camera")
+    depth = np.full((intr["height"], intr["width"]), 0.45, np.float32)
+    cleaned = runtime._depth_without_body(
+        {"depth": depth, "fovy": intr["fovy"], "camera": "wide_camera", "header": _header()})
+    assert (cleaned == 0).any(), "the wide camera sees the mast and the arm"
+    assert (cleaned == 0.45).any()
+    assert runtime.estimator.odometry["x"] == 0.0 and runtime.estimator.joints == {}
+
+
+def _posed_state() -> dict:
+    return {"stamp": 1.0, "odometry": {"x": 0.0, "y": 0.0, "yaw": 0.0}, "joints": {},
+            "gripper": {"holding": False}, "entities": {}, "toolOffset": 0.3, "posed": True}
+
+
+def test_a_look_around_leaves_drawers_alone_unless_asked():
+    from steward.ego.skills import Job, SkillExecutor
+
+    called = []
+    executor = SkillExecutor(lambda _cmd: None, _posed_state, lambda track: track,
+                             closed_drawers=lambda: called.append("list") or ["e:drawer"],
+                             drawer_plan=lambda skill, target: called.append(skill) or ({}, ""))
+    executor._turn_to = lambda _yaw: None
+    executor._wait = lambda _seconds: None
+    job = Job(id="job-1", skill="look_around", receipt="look-around")
+    executor._look_around(job)
+    assert called == []
+    assert sum(line.startswith("looked toward") for line in job.log) == 4
+
+
+def test_a_look_around_opens_a_closed_drawer_looks_inside_and_closes_it():
+    """The four turns still happen. A closed drawer is then opened, watched, and closed."""
+    from steward.ego.skills import Job, MotionConfig, SkillExecutor
+
+    visited = []
+    asked = []
+
+    def plan(skill: str, target: str, distance: float | None = None,
+             handle: list[float] | None = None, axis: list[float] | None = None) -> tuple[dict | None, str]:
+        asked.append((skill, distance, handle, axis))
+        return {"drawer": target, "which": skill, "handle": [1.0, 2.0, 0.7], "axis": [1.0, 0.0]}, ""
+
+    pins = []
+    executor = SkillExecutor(lambda _cmd: None, _posed_state, lambda track: track,
+                             MotionConfig(inspect_closed_drawers=True),
+                             closed_drawers=lambda: ["e:drawer"], drawer_plan=plan,
+                             pin=lambda tid, on: pins.append((tid, on)), furniture=lambda _tid: "e:cabinet")
+    executor._turn_to = lambda _yaw: None
+    executor._wait = lambda _seconds: None
+    executor._translate_to = lambda _x, _y, _yaw, speed=None: None
+
+    def slide(_job, drawer_plan):
+        visited.append(drawer_plan["which"])
+        return 0.29 if drawer_plan["which"] == "open" else -0.29
+
+    executor._drawer = slide
+    job = Job(id="job-1", skill="look_around", receipt="look-around")
+    executor._look_around(job)
+    assert sum(line.startswith("looked toward") for line in job.log) == 4
+    assert visited == ["open", "close"]
+    assert asked[-1][0] == "close" and asked[-1][1] == pytest.approx(0.29)
+    assert asked[-1][2] == pytest.approx([1.29, 2.0, 0.7])
+    assert asked[-1][3] == pytest.approx([1.0, 0.0])
+    assert "looked inside e:drawer" in job.log
+    assert pins == [("e:cabinet", True), ("e:drawer", True), ("e:drawer", False), ("e:cabinet", False)]
+    assert "looked along e:drawer" in job.log
+
+
+def test_an_uncertain_handle_is_approached_before_the_drawer_is_opened():
+    """A far drawer has a safe path but too much handle uncertainty. Walk there, then open."""
+    from steward.ego.skills import Job, MotionConfig, SkillExecutor
+
+    calls = {"n": 0}
+    driven = []
+
+    def plan(skill: str, target: str) -> tuple[dict | None, str]:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return {"path": [[0.0, 0.0], [1.0, 0.0]], "yaw": 0.0, "drawer": target}, "87% miss"
+        return {"drawer": target, "which": skill}, ""
+
+    executor = SkillExecutor(lambda _cmd: None, _posed_state, lambda track: track,
+                             MotionConfig(inspect_closed_drawers=True),
+                             closed_drawers=lambda: ["e:drawer"], drawer_plan=plan)
+    executor._turn_to = lambda _yaw: None
+    executor._wait = lambda _seconds: None
+    executor._translate_to = lambda _x, _y, _yaw, speed=None: None
+    executor._drive = lambda _job, path, _yaw: driven.append(path)
+    visited = []
+    executor._drawer = lambda _job, drawer_plan: visited.append(drawer_plan["which"])
+    job = Job(id="job-1", skill="look_around", receipt="look-around")
+    executor._look_around(job)
+    assert driven == [[[0.0, 0.0], [1.0, 0.0]]]
+    assert "approached e:drawer" in job.log
+    assert visited == ["open", "close"]
+
+
+def test_a_drawer_that_cannot_be_opened_is_skipped_and_the_look_around_continues():
+    from steward.ego.skills import Job, MotionConfig, SkillExecutor, SkillFailed
+
+    visited = []
+
+    def plan(skill: str, target: str) -> tuple[dict | None, str]:
+        if target == "e:far":
+            return None, "no path"
+        if skill == "open":
+            return {"drawer": target, "which": skill}, ""
+        return None, "already closed"
+
+    executor = SkillExecutor(lambda _cmd: None, _posed_state, lambda track: track,
+                             MotionConfig(inspect_closed_drawers=True),
+                             closed_drawers=lambda: ["e:far", "e:near"], drawer_plan=plan)
+
+    def open_or_fail(_job, drawer_plan):
+        if drawer_plan["drawer"] == "e:near":
+            raise SkillFailed("missed the handle")
+        visited.append(drawer_plan["which"])
+
+    executor._turn_to = lambda _yaw: None
+    executor._wait = lambda _seconds: None
+    executor._drawer = open_or_fail
+    job = Job(id="job-1", skill="look_around", receipt="look-around")
+    executor._look_around(job)
+    assert visited == []
+    assert any("left e:far closed" in line for line in job.log)
+    assert any("could not open e:near" in line for line in job.log)
+    assert job.state == "running"
+
+
+def test_closed_drawers_are_the_ones_already_seen_and_still_shut():
+    from steward.ego.estimator import Track
+
+    runtime = _offline()
+    runtime.estimator.odometry = {"x": 0.0, "y": 0.0, "yaw": 0.0}
+
+    def track(oid, category, pos, observations=6, existence=1.0):
+        return Track(id=oid, category_counts={category: 5.0}, pos=np.array(pos, float),
+                     var=np.full(3, 1e-4), yaw=0.0, yaw_var=1e-3, size=np.array([0.5, 0.4, 0.2]),
+                     observations=observations, first_seen=0.0, last_seen=0.0, existence=existence)
+
+    near = track("e:near", "drawer", [0.4, 0.1, 0.5])
+    far = track("e:far", "drawer", [2.0, 0.0, 0.5])
+    young = track("e:young", "drawer", [0.2, 0.0, 0.5], observations=2)
+    cup = track("e:cup", "cup", [0.1, 0.1, 0.9])
+    runtime.estimator.tracks = {t.id: t for t in (far, young, cup, near)}
+    assert runtime._closed_drawer_ids() == ["e:near", "e:far"]

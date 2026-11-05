@@ -26,8 +26,9 @@ from PIL import Image
 from steward.ego.perception import (box_of, decode_rgbd, match_face, resample_face, segments, top_face, top_face_array,
                                     world_up_face)
 from steward.ego.kinematics import gripper_pose
+from steward.ego.providers.geometric_masks import _backproject
 from steward.ego.esim import Esim, EsimConfig
-from steward.ego.estimator import SELF_ID, EgoEstimator
+from steward.ego.estimator import SELF_ID, EgoEstimator, _CONTENT
 from steward.ego.roles import RoleConfig, assign_roles
 from steward.ego.segmenter import Segmenter, SegmenterError
 from steward.ego.skills import MotionConfig, SkillExecutor, SkillFailed
@@ -308,7 +309,11 @@ class EgoRuntime:
         self.executor = SkillExecutor(self.link.command, self._motion_state, self._mark_held, self.config.motion,
                                       shift=self._shift_track, on_error=lambda msg: self.alert(msg, "skill"),
                                       on_finish=self._skill_finished, on_release=self._released,
-                                      on_begin=self._skill_begin, clock=self.link)
+                                      on_begin=self._skill_begin, clock=self.link,
+                                      closed_drawers=self._closed_drawer_ids, drawer_plan=self._drawer_plan,
+                                      pin=self._pin_track, furniture=self._furniture_id,
+                                      contents=self._content_ids, content_positions=self._content_positions,
+                                      resettle=self._resettle_contents)
         self._view_scene: tuple[dict, int, float] | None = None  # (ES dict, version, stamp) for the view
         self.face_error: str | None = None  # why the latest camera image for faces could not be fetched
         self._face_thread: threading.Thread | None = None
@@ -490,7 +495,7 @@ class EgoRuntime:
                 with self._lock:
                     cam = self.estimator.camera_pose(header["odometry"], rgbd["camera"])
                 up_cam = matrix_from_quat(cam["q"]).T @ np.array([0.0, 0.0, 1.0])
-                result = self.segmenter.fill(result, rgbd["depth"], rgbd["fovy"], up_cam)
+                result = self.segmenter.fill(result, self._depth_without_body(rgbd), rgbd["fovy"], up_cam)
             except SegmenterError as exc:
                 error = str(exc)
             else:
@@ -506,6 +511,32 @@ class EgoRuntime:
             self.alert(f"图像分割失败，本帧只更新机器人自身状态：{error}", "runtime")
         stats["lastError"] = error
         return False
+
+    def _depth_without_body(self, rgbd: dict) -> np.ndarray:
+        """``rgbd`` depth with pixels on the robot's own links set to 0.
+
+        Depth clustering, unlike a world mask, does not know the body. The copy is only for the
+        geometric fill; the frame's depth still measures the scene."""
+        depth = np.array(rgbd["depth"], dtype=np.float32, copy=True)
+        header = rgbd["header"]
+        est = self.estimator
+        saved = (est.odometry, est.joints, est.gripper)
+        est.odometry = header["odometry"]
+        est.joints = header["joints"]
+        est.gripper = header["gripper"]
+        try:
+            valid = np.isfinite(depth) & (depth > 0.05)
+            if not valid.any():
+                return depth
+            pts, ys, xs = _backproject(depth, float(rgbd["fovy"]), valid)
+            cam = est.camera_pose(header["odometry"], rgbd.get("camera"))
+            rot = matrix_from_quat(cam["q"])
+            world = pts @ rot.T + np.asarray(cam["p"], float)
+            inside = est.on_body(world)
+        finally:
+            est.odometry, est.joints, est.gripper = saved
+        depth[ys[inside], xs[inside]] = 0.0
+        return depth
 
     @contextlib.contextmanager
     def _holding(self, hold: str):
@@ -656,7 +687,8 @@ class EgoRuntime:
             est = self.estimator
             entities = {t.id: {"p": t.pos.tolist()} for t in est.tracks.values()}
             state = {"stamp": est.stamp, "odometry": dict(est.odometry), "joints": dict(est.joints),
-                     "gripper": dict(est.gripper), "entities": entities, "toolOffset": self.esim.tool_offset}
+                     "gripper": dict(est.gripper), "entities": entities, "toolOffset": self.esim.tool_offset,
+                     "posed": est.posed}
         try:
             live = self.link.sensors()
         except Exception:  # noqa: BLE001 - the belief is still a usable answer when the body cannot be reached
@@ -685,6 +717,49 @@ class EgoRuntime:
     def _shift_track(self, track_id: str, delta: list[float]) -> None:
         with self._lock:
             self.estimator.shift(track_id, delta)
+
+    def _pin_track(self, track_id: str, pinned: bool) -> None:
+        """Keep a track's box still while a drawer in it is opened and closed.
+
+        A drawer keeps the name ``drawer`` while it is pinned, so a view of the open drawer
+        cannot rename it and make the close refuse. Furniture is only held still: its name stays."""
+        with self._lock:
+            track = self.estimator.tracks.get(track_id)
+            if track is None:
+                return
+            track.pinned = pinned
+            if pinned and track.category == "drawer":
+                track.label = "drawer"
+
+    def _furniture_id(self, drawer_id: str) -> str | None:
+        """The floor-standing piece whose footprint holds ``drawer_id``, if one is known."""
+        with self._lock:
+            drawer = self.estimator.tracks.get(drawer_id)
+            if drawer is None:
+                return None
+            host = self.estimator._furniture_of(drawer)
+            return None if host is None else host.id
+
+    def _content_ids(self, drawer_id: str) -> list[str]:
+        """Small tracks on a drawer's floor, held still while the robot looks along the drawer."""
+        with self._lock:
+            drawer = self.estimator.tracks.get(drawer_id)
+            if drawer is None:
+                return []
+            # Only the bear, pistol and bottles. A bowl born on the first side step
+            # is not held: pinning it froze a wrong name onto the pistol.
+            return [tid for tid in self.estimator._near_drawer(drawer)
+                    if self.estimator.tracks[tid].category in _CONTENT]
+
+    def _content_positions(self, drawer_id: str) -> dict[str, list[float]]:
+        """Positions of those tracks just before the drawer is pushed back."""
+        with self._lock:
+            return self.estimator.content_positions(drawer_id)
+
+    def _resettle_contents(self, drawer_id: str, delta: list[float], before: dict[str, list[float]]) -> list[str]:
+        """Bring back contents a late view of the open drawer left in front of it."""
+        with self._lock:
+            return self.estimator.resettle(drawer_id, np.asarray(delta, float), before)
 
     # ------------------------------------------------------------- Ego API
     def summary(self) -> dict:
@@ -977,6 +1052,10 @@ class EgoRuntime:
                 "results": results, "stamp": frame["header"]["stamp"]}
 
     def observe(self) -> dict:
+        """What the cameras see now: ``visible`` objects, and ``images`` as base64 PNGs keyed by camera.
+
+        With ``out_dir`` set, ``imagePaths`` is the same PNGs written beside the runtime.
+        """
         frame = self.link.sensors()
         cameras = self._cameras(frame)
         if frame.get("imaging") == "rgbd":
@@ -997,13 +1076,16 @@ class EgoRuntime:
         else:
             visible = [{"category": d["category"], "rangeM": round(d["range"], 2), "camera": d.get("camera")}
                        for d in frame["detections"] if d.get("camera") in cameras]
-        out = {"t": frame["stamp"], "visible": visible}
+        out = {"t": frame["stamp"], "visible": visible, "images": {}}
         if self.out_dir is not None:
             self.out_dir.mkdir(parents=True, exist_ok=True)
             out["imagePaths"] = {}
-            for camera in cameras:
+        for camera in cameras:
+            png = self.link.camera_png(camera=camera)
+            out["images"][camera] = base64.b64encode(png).decode("ascii")
+            if self.out_dir is not None:
                 path = self.out_dir / f"observe-{frame['stamp']:.2f}-{camera}.png"
-                path.write_bytes(self.link.camera_png(camera=camera))
+                path.write_bytes(png)
                 out["imagePaths"][camera] = str(path)
         return out
 
@@ -1351,9 +1433,52 @@ class EgoRuntime:
         return job
 
     def explore(self, owner: str | None = None) -> dict:
-        """Look around in place. Rotation without translation needs no receipt."""
+        """Look around in place. Rotation without translation needs no receipt.
+
+        When ``MotionConfig.inspect_closed_drawers`` is set, each closed drawer is opened, looked
+        into, and closed afterwards. Those visits are planned from the ego state at the time and
+        skipped when they are not feasible."""
         self._check_control(owner)
         return self.executor.start("look_around", {"id": "look-around", "plan": {}}).to_dict()
+
+    def _closed_drawer_ids(self) -> list[str]:
+        """Closed pullable drawers already seen enough times to open, nearest first."""
+        with self._lock:
+            est = self.estimator
+            ox, oy = float(est.odometry.get("x", 0.0)), float(est.odometry.get("y", 0.0))
+            found = [t for t in est.tracks.values()
+                     if t.category == "drawer" and "pullable" in t.affordances
+                     and t.existence >= 0.5 and t.observations >= 3
+                     and est.drawer_opening(t) < 0.08]
+            found.sort(key=lambda t: math.hypot(float(t.pos[0]) - ox, float(t.pos[1]) - oy))
+            return [t.id for t in found]
+
+    def _drawer_plan(self, skill: str, target: str, distance: float | None = None,
+                     handle: list[float] | None = None, axis: list[float] | None = None) -> tuple[dict | None, str]:
+        """Plan for opening or closing ``target``, or why that plan cannot be run.
+
+        ``distance`` is how far a close must travel when the track no longer shows the opening
+        that was just pulled. ``handle`` and ``axis`` are that pull, so the close does not follow
+        a box the look has shifted."""
+        from steward.ego.esim import PredictionError
+        params: dict = {"target": target}
+        if distance is not None:
+            params["distance"] = distance
+        if handle is not None:
+            params["handle"] = handle
+        if axis is not None:
+            params["axis"] = axis
+        try:
+            receipt = self.predict(skill, params)
+        except PredictionError as exc:
+            return None, str(exc)
+        plan = receipt.get("plan")
+        if not receipt.get("feasible") or not plan:
+            return None, "; ".join(receipt.get("issues") or ["not feasible"])
+        receipt["used"] = True
+        if receipt.get("withinRiskLimit"):
+            return plan, ""
+        return plan, "; ".join(receipt.get("issues") or ["risk above the limit"])
 
     def job(self, job_id: str) -> dict:
         if job_id not in self.executor.jobs:

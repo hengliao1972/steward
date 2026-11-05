@@ -96,8 +96,8 @@ def segments(frame: dict, cam_pose: dict, config: PerceptionConfig | None = None
         bottom = _bottom_seen(mask, depth, instance, ys, xs, cfg)
         color = rgb[ys, xs].reshape(-1, 3).mean(axis=0) / 255.0
         invalid = float(1.0 - valid.mean())
-        # A segmenter mask sometimes covers two things standing side by side. Anonymous world masks
-        # stay whole: splitting them would cut a single object whose points happen to have a gap.
+        # A segmenter mask sometimes covers two things standing side by side, or a table top and the
+        # objects on it. Anonymous world masks stay whole: splitting them would cut one object.
         split = _raised_cluster_indices(measured, cfg.min_points) if labels is not None else None
         if split is None:
             # The stored cloud stays a sample, unchanged from before. The corners are the box of every
@@ -194,22 +194,31 @@ def _box_below_picture(depth: np.ndarray, mask: np.ndarray, cam_pose: dict, fovy
 
 
 def _raised_cluster_indices(points: np.ndarray, min_points: int) -> list[np.ndarray] | None:
-    """Two index arrays into ``points`` when a raised region is two compact objects with a gap.
+    """Index arrays into ``points`` when a raised region is several objects, not one.
 
-    Furniture and anything standing on the floor stay one region. The gap is measured along the
-    longer horizontal direction and has to be at least 5 cm, with each side smaller than a bowl
-    is wide: a handle or a thin stem does not qualify.
+    A region up to 65 cm across splits on one horizontal gap of at least 5 cm. A piece that also
+    contains the table around a shallow bowl keeps only what stands 2 cm above that piece's base.
+    A wider raised slab keeps the clusters that stand at least 3.5 cm above the slab. Furniture
+    that reaches the floor, and a region wider than 1.2 m, stay whole.
 
     :param points: map-frame points of one mask, already above the floor cut.
-    :param min_points: fewest points each side must keep.
+    :param min_points: fewest points each piece must keep.
     :returns: ``None`` when the region is one object."""
     if len(points) < 2 * min_points:
         return None
     if float(np.percentile(points[:, 2], 10)) <= 0.2:
         return None
     span = points.max(axis=0) - points.min(axis=0)
-    if max(float(span[0]), float(span[1])) > 0.55 or float(span[2]) > 0.3:
+    horiz = max(float(span[0]), float(span[1]))
+    if float(span[2]) > 0.35 or horiz > 1.2:
         return None
+    if horiz <= 0.65 and float(span[2]) <= 0.3:
+        return _two_compact_sides(points, min_points)
+    return _bumps_above_slab(points, min_points)
+
+
+def _two_compact_sides(points: np.ndarray, min_points: int) -> list[np.ndarray] | None:
+    """Two index arrays when one gap of at least 5 cm divides ``points`` into two small pieces."""
     centred = points[:, :2] - points[:, :2].mean(axis=0)
     axis = np.linalg.eigh(centred.T @ centred / len(points))[1][:, 1]
     order = np.argsort(centred @ axis)
@@ -223,13 +232,172 @@ def _raised_cluster_indices(points: np.ndarray, min_points: int) -> list[np.ndar
     if float(gaps[k]) < 0.05:
         return None
     left, right = order[:k + 1], order[k + 1:]
-    if len(left) < min_points or len(right) < min_points:
-        return None
+    sides = []
     for idx in (left, right):
-        extent = points[idx].max(axis=0) - points[idx].min(axis=0)
-        if max(float(extent[0]), float(extent[1])) > 0.25 or float(extent[2]) > 0.22:
+        core = _object_core(points, idx, min_points)
+        if core is None:
             return None
-    return [left, right]
+        sides.append(core)
+    return sides
+
+
+def _object_core(points: np.ndarray, idx: np.ndarray, min_points: int) -> np.ndarray | None:
+    """``idx`` when it is already one small object, or the points that stand above its base.
+
+    A side of a gap can include the table around a shallow bowl. Those table points sit at the
+    base; the bowl is what remains more than 3 cm above that base. When that part is still wide,
+    the largest cluster within 32 cm is the bowl and the rest of the table is left out."""
+    if len(idx) < min_points:
+        return None
+    chosen = idx
+    extent = points[chosen].max(axis=0) - points[chosen].min(axis=0)
+    if max(float(extent[0]), float(extent[1])) > 0.25:
+        base = float(np.percentile(points[idx, 2], 20))
+        chosen = idx[points[idx, 2] > base + 0.03]
+        if len(chosen) < min_points:
+            return None
+        extent = points[chosen].max(axis=0) - points[chosen].min(axis=0)
+        if max(float(extent[0]), float(extent[1])) > 0.32:
+            compact = _largest_compact(points[chosen], min_points)
+            if compact is None:
+                return None
+            chosen = chosen[compact]
+            extent = points[chosen].max(axis=0) - points[chosen].min(axis=0)
+    if float(extent[2]) > 0.22:
+        return None
+    return chosen
+
+
+def oversized_bowl_core(points: np.ndarray) -> np.ndarray | None:
+    """Compact cluster of a bowl cloud that also holds a separate stretch of its support.
+
+    A bowl is at most about 32 cm across. A longer cloud is that bowl plus support voxels that do
+    not touch it. One connected slab is left whole: the cluster is kept only when it is actually
+    smaller than the cloud it was cut from.
+
+    :param points: map-frame points of one accumulated cloud.
+    :returns: the bowl's points, or ``None``."""
+    if len(points) < 40:
+        return None
+    extent = points.max(axis=0) - points.min(axis=0)
+    horiz = max(float(extent[0]), float(extent[1]))
+    if horiz <= 0.36:
+        return None
+    compact = _largest_compact(points, 20)
+    if compact is None:
+        return None
+    core = points[compact]
+    core_extent = core.max(axis=0) - core.min(axis=0)
+    core_horiz = max(float(core_extent[0]), float(core_extent[1]))
+    if core_horiz > 0.85 * horiz:
+        return None
+    return core
+
+
+def raised_object_points(points: np.ndarray) -> np.ndarray | None:
+    """The compact cluster standing on a wide shallow slab, or ``None`` when ``points`` is one object.
+
+    A bowl measured together with the table around it is about half a metre across, with its base
+    up on the table. The table is the lower surface; what stands at least 3 cm above that surface
+    and stays within 32 cm across is the object. A flat top is left unchanged, and so is a cloud
+    whose base is below 0.7 m: a drawer front sits down inside the furniture, not on the top.
+
+    :param points: map-frame points of one accumulated cloud.
+    :returns: the object's points, or ``None``."""
+    if len(points) < 40:
+        return None
+    extent = points.max(axis=0) - points.min(axis=0)
+    horiz = max(float(extent[0]), float(extent[1]))
+    base_z = float(np.percentile(points[:, 2], 10))
+    if horiz <= 0.35 or float(extent[2]) > 0.25 or base_z <= 0.70:
+        return None
+    base = float(np.percentile(points[:, 2], 30))
+    raised = points[points[:, 2] > base + 0.03]
+    if len(raised) < 20:
+        return None
+    raised_extent = raised.max(axis=0) - raised.min(axis=0)
+    if not 0.04 <= float(raised_extent[2]) <= 0.22:
+        return None
+    if max(float(raised_extent[0]), float(raised_extent[1])) > 0.32:
+        compact = _largest_compact(raised, 20)
+        if compact is None:
+            return None
+        raised = raised[compact]
+        raised_extent = raised.max(axis=0) - raised.min(axis=0)
+    if float(raised_extent[2]) < 0.04 or max(float(raised_extent[0]), float(raised_extent[1])) > 0.85 * horiz:
+        return None
+    return raised
+
+
+def _largest_compact(points: np.ndarray, min_points: int, max_extent: float = 0.32) -> np.ndarray | None:
+    """Indices of the largest 3 cm cluster that is at most ``max_extent`` across and at most 22 cm tall."""
+    if len(points) < min_points:
+        return None
+    cell = 0.03
+    keys = np.floor(points[:, :2] / cell).astype(np.int64)
+    buckets: dict[tuple[int, int], list[int]] = {}
+    for i, key in enumerate(keys):
+        buckets.setdefault((int(key[0]), int(key[1])), []).append(i)
+    seen: set[tuple[int, int]] = set()
+    best: np.ndarray | None = None
+    for start in buckets:
+        if start in seen:
+            continue
+        stack = [start]
+        seen.add(start)
+        cells: list[tuple[int, int]] = []
+        while stack:
+            ix, iy = stack.pop()
+            cells.append((ix, iy))
+            for dx in (-1, 0, 1):
+                for dy in (-1, 0, 1):
+                    nxt = (ix + dx, iy + dy)
+                    if nxt in buckets and nxt not in seen:
+                        seen.add(nxt)
+                        stack.append(nxt)
+        idx = np.array([i for c in cells for i in buckets[c]], dtype=np.int64)
+        if len(idx) < min_points:
+            continue
+        extent = points[idx].max(axis=0) - points[idx].min(axis=0)
+        if max(float(extent[0]), float(extent[1])) > max_extent or float(extent[2]) > 0.22:
+            continue
+        if best is None or len(idx) > len(best):
+            best = idx
+    return best
+
+
+def _bumps_above_slab(points: np.ndarray, min_points: int) -> list[np.ndarray] | None:
+    """Index arrays of the clusters standing above the lower surface of a wide raised region.
+
+    The slab itself is not returned: a table already has its own region. Each cluster has to be
+    at least 3 cm tall and no wider than a large bowl, so a ripple in the slab does not qualify.
+    """
+    support = float(np.percentile(points[:, 2], 40))
+    above = np.flatnonzero(points[:, 2] > support + 0.035)
+    if len(above) < 2 * min_points:
+        return None
+    raised = points[above]
+    centred = raised[:, :2] - raised[:, :2].mean(axis=0)
+    axis = np.linalg.eigh(centred.T @ centred / len(raised))[1][:, 1]
+    coord = centred @ axis
+    order = np.argsort(coord)
+    ordered = coord[order]
+    groups: list[np.ndarray] = []
+    start = 0
+    for i in range(len(ordered) - 1):
+        if float(ordered[i + 1] - ordered[i]) >= 0.04:
+            groups.append(order[start:i + 1])
+            start = i + 1
+    groups.append(order[start:])
+    kept: list[np.ndarray] = []
+    for group in groups:
+        if len(group) < min_points:
+            continue
+        extent = raised[group].max(axis=0) - raised[group].min(axis=0)
+        if max(float(extent[0]), float(extent[1])) > 0.36 or not 0.03 <= float(extent[2]) <= 0.25:
+            continue
+        kept.append(above[group])
+    return kept if len(kept) >= 2 else None
 
 
 def _bottom_seen(mask: np.ndarray, depth: np.ndarray, instance: int, ys: np.ndarray, xs: np.ndarray,

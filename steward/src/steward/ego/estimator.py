@@ -23,8 +23,11 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from steward.ego.classify import SHAPES, classify, fuse_semantics, prototype
-from steward.ego.perception import box_at_yaw, box_of, segments
+from steward.ego.classify import (OVER, SHAPES, classify, content_color_name, fuse_respecting_color,
+                                  max_long_extent, max_plan_aspect, partial_pistol,
+                                  perfume_without_bottle_label, prototype, shape_over_bottle,
+                                  sideboard_not_counter)
+from steward.ego.perception import box_at_yaw, box_of, oversized_bowl_core, raised_object_points, segments
 from steward.ego.planner import Box2D, front_box, protrusion, room_centre
 from steward.ego.priors import compatible, prior
 from steward.math3d import (matrix_from_quat, pose_compose, pose_inverse, quat_from_axis_angle, quat_from_yaw,
@@ -75,6 +78,7 @@ class Track:
     voxels: np.ndarray | None = None  # 1 cm voxels of every surface seen of this object (RGB-D mode)
     span: np.ndarray | None = None  # corners of each view's full-resolution box; the voxel cloud is only a sample
     completion: float = 0.0  # how far the box was extended beyond what was seen (shape prior)
+    seen_across: int = 0  # bit 0/1 once that plan axis was seen within SEEN_ACROSS_DOT of broadside
     settled: bool = True  # False right after the robot put it down, until it is seen again
     mean_rgb: np.ndarray | None = None  # running mean colour of its regions (RGB-D mode)
     mean_invalid: float = 0.0  # running mean share of its pixels without depth
@@ -92,6 +96,7 @@ class Track:
     semantic_counts: dict[str, float] = field(default_factory=dict)
     # summed segmenter scores per category over the views that named it (robot-side segmentation)
     semantic_views: int = 0  # views whose region the segmenter named
+    pinned: bool = False  # the robot is pulling this drawer; views must not move or replace it
 
     @property
     def category(self) -> str:
@@ -101,6 +106,8 @@ class Track:
     def perceived_category(self) -> str:
         """The category perception accumulated, regardless of a label: what detections of the same
         object will keep reporting, so association compares with it."""
+        if not self.category_counts:
+            return "unknown"
         return max(self.category_counts, key=self.category_counts.get)
 
     @property
@@ -140,6 +147,8 @@ class EstimatorConfig:
     gate_m: float = 0.30
     size_gate_ratio: float = 0.25
     size_match_log: float = 0.15
+    nested_bowl_log: float = math.log(1.4)
+    """Footprint log-ratio above which two bowls are different objects. Nesting sizes step by 1.5."""
     voxels_max: int = 6000
     points_per_cloud: int = 150
     missed_decay: float = 0.97
@@ -191,10 +200,12 @@ class EgoEstimator:
         self.tracks: dict[str, Track] = {}
         self._ids = itertools.count(1)
         self.dropped: collections.deque = collections.deque(maxlen=500)
+        self.content_hits: list[tuple] = []
         """The most recent removals: ``{t, id, category, observations, reason, position, size, robot, into?}``."""
         self.version = 0
         self.stamp = 0.0
         self.held_since = 0.0  # body time the current load was grasped at
+        self.posed = False
         self.odometry = {"x": 0.0, "y": 0.0, "yaw": 0.0, "sigma": {"pos": 0.01, "yaw": 0.01}}
         self.joints: dict[str, float] = {}
         self.gripper = {"state": "open", "holding": False}
@@ -368,6 +379,7 @@ class EgoEstimator:
     # ----------------------------------------------------------------- update
     def update(self, frame: dict) -> None:
         self.stamp = float(frame["stamp"])
+        self.posed = True
         self.odometry = frame["odometry"]
         self.joints = frame["joints"]
         self._read_grippers(frame)
@@ -412,6 +424,7 @@ class EgoEstimator:
         """Follow the robot's own state (stamp, odometry, joints, gripper) from a sensor header
         without imaging: between two segmented frames, what the gripper holds moves with it."""
         self.stamp = float(header["stamp"])
+        self.posed = True
         self.odometry = header["odometry"]
         self.joints = header["joints"]
         self.gripper = header["gripper"]
@@ -423,12 +436,20 @@ class EgoEstimator:
     def category_probs(self, size: np.ndarray, bottom: float, color: np.ndarray, invalid_frac: float,
                        bottom_seen: bool, semantics: dict[str, float] | None) -> dict[str, float]:
         """Category probabilities of a measured box: the shape priors alone, or fused with the
-        segmenter's category scores when it named the region."""
+        segmenter's category scores when it named the region.
+
+        Short names are not dropped here. A cabinet face narrower than 0.3 m is often labelled as
+        a shorter object; dropping that label changes which track the face joins and the cabinet
+        grows. A winning ``bottle`` label is replaced by the shape prior
+        (:func:`shape_over_bottle`): that name has no template. The filled wine glass is renamed
+        in :meth:`_reclassify_filled_height`."""
         if not semantics:
             return classify(size, bottom, color, invalid_frac, bottom_seen=bottom_seen)
         shape = classify(size, bottom, color, invalid_frac, bottom_seen=bottom_seen, min_prob=0.0)
         cfg = self.config
-        return fuse_semantics(semantics, shape, cfg.semantic_shape_weight, cfg.semantic_label_floor)
+        fused = fuse_respecting_color(semantics, shape, color, invalid_frac, cfg.semantic_shape_weight,
+                                      cfg.semantic_label_floor)
+        return shape_over_bottle(fused, shape)
 
     # ------------------------------------------------------------- RGB-D path
     def update_rgbd(self, frame: dict, defer: Callable[[np.ndarray], bool] | None = None) -> None:
@@ -443,6 +464,7 @@ class EgoEstimator:
         """
         header = frame["header"]
         self.stamp = float(header["stamp"])
+        self.posed = True
         self.odometry = header["odometry"]
         self.joints = header["joints"]
         self._read_grippers(header)
@@ -462,6 +484,11 @@ class EgoEstimator:
             probs = self.category_probs(size, centre[2] - size[2] / 2, seg.color, seg.invalid_frac,
                                         seg.bottom_seen, seg.semantics)
             footprint = float(max(size[0], size[1]))
+            if seg.semantics and "teddy_bear" in seg.semantics and footprint < 0.40 and len(self.content_hits) < 30:
+                self.content_hits.append((round(self.stamp, 1),
+                                          [round(float(v), 2) for v in centre],
+                                          [round(float(v), 2) for v in size],
+                                          round(float(seg.semantics["teddy_bear"]), 2)))
             measurements.append({"seg": seg, "centre": centre, "size": size, "yaw": yaw, "probs": probs,
                                  "footprint": footprint, "concave": _concave(seg.points, centre, footprint, cam_p),
                                  "deferred": defer is not None and defer(_box_corners(centre, size, yaw))})
@@ -472,7 +499,10 @@ class EgoEstimator:
             # never to a neighbour it is carried past.
             at_load = held is not None and float(np.linalg.norm(held.pos - m["centre"])) < max(0.15, 0.6 * held.footprint)
             for track in self.tracks.values():
-                if at_load and track is not held:
+                # A pinned drawer is being pulled: leave it unmatched so its contents can start
+                # their own tracks. A pinned cabinet still takes the view, and the fuse then
+                # drops the points, so the open drawer does not become a second cabinet.
+                if (track.pinned and track.category == "drawer") or (at_load and track is not held):
                     continue
                 d = float(np.linalg.norm(track.pos - m["centre"]))
                 # Neighbouring tableware stands ~0.2 m apart: the gate scales with the object size.
@@ -482,7 +512,16 @@ class EgoEstimator:
                 # inside its box and below its top; something standing on it starts at or above the top,
                 # and an open drawer reaches out of it.
                 m_bottom, m_top = m["centre"][2] - m["size"][2] / 2, m["centre"][2] + m["size"][2] / 2
-                part_of_large = track.footprint > 0.3 and m["footprint"] >= 0.3 \
+                # A cup, bear or bottle inside an open drawer is its own object. A piece of the
+                # drawer front is named drawer and is still part of the drawer.
+                named = max(m["probs"], key=m["probs"].get) if m["probs"] else ""
+                # A pistol or perfume already has its own track. A later mask of the drawer
+                # around it is not another view of it, and must not grow it into the drawer.
+                if (track.category in ("pistol", "perfume_bottle")
+                        and (named == "drawer" or m["footprint"] > 1.5 * track.footprint)):
+                    continue
+                contents = track.category == "drawer" and m["footprint"] < 0.30 and named != "drawer"
+                part_of_large = not contents and track.footprint > 0.3 and m["footprint"] >= 0.3 \
                     and _footprint_inside(track, m, 0.05) \
                     and m_top <= track.top() + 0.1 and m_bottom < track.top() - 0.02
                 # (a tableware-sized region is never a part of furniture: a bowl on a table whose
@@ -496,8 +535,16 @@ class EgoEstimator:
                     abs(math.log(max(m["footprint"], 1e-3) / max(track.footprint, 1e-3)))
                 if size_r > 0.9:
                     continue
+                # Nested bowls share a centre, and their footprints differ by more than one noisy
+                # view of a single bowl. A partial view of that bowl is shifted toward the side
+                # the camera saw, so it still joins the track.
+                if (track.category == "bowl" and named == "bowl"
+                        and self._separate_bowls(m["footprint"], track.footprint, m["centre"], track.pos)):
+                    continue
                 if not track.held and track.observations >= 5 and m["footprint"] > 1.5 * track.footprint:
                     continue  # partial views only shrink a well-seen object; a much larger region is something else
+                if track.category == "drawer" and (m["footprint"] > DRAWER_MAX_M or float(m["size"][2]) > DRAWER_MAX_HEIGHT):
+                    continue  # the sideboard or cabinet face around a drawer is a different object
                 if not track.held and not part_of_large and self._contradicts(track, m):
                     continue
                 if not track.held and _stacked(track.bottom(), track.top(), m_bottom, m_top, m["centre"][2],
@@ -540,10 +587,13 @@ class EgoEstimator:
         self._dedupe_furniture(cam_p)
         self._merge_rim_fragments()
         self._fold_furniture_slices(cam_p)
+        self._drop_support_top_drawers()
         self._merge_same_surface(cam_p)
+        self._merge_same_place(cam_p)
         self._merge_walls(cam_p)
         self._drop_impossible(cam_p)
         self._drop_orphan_parts()
+        self._drop_false_tableware()
         self._follow_held()
         self.version += 1
 
@@ -551,11 +601,32 @@ class EgoEstimator:
         """Remove tracks that cannot be solid objects: one whose surfaces lie behind its own box
         centre as seen from the camera (a concave corner of the room boxed as if it were a convex
         block), one whose footprint holds the robot's base (the robot stands there), a non-wall
-        track as tall as a wall (wall pieces swept into it), and a ``box`` wider than 0.9 m.
-        Such boxes would otherwise fill the room's corners, hide the objects in them and block every path."""
-        base = np.array([self.odometry["x"], self.odometry["y"], 0.0])
+        track as tall as a wall (wall pieces swept into it), a ``box`` wider than 0.9 m, and a
+        grazing edge (metres long and only a few decimetres thick, or a few centimetres thick and
+        taller than the furniture).
+        Such boxes would otherwise fill the room's corners, hide the objects in them and block every path.
+        Grazing edges are removed first: a later hollow test must not keep them."""
         for track in list(self.tracks.values()):
             if track.held or track.category == "wall":
+                continue
+            thin = min(float(track.size[0]), float(track.size[1]))
+            # No furniture in the room is a few decimetres thick over a metre, and nothing real
+            # is under 8 cm thick and taller than a cabinet. A wall edge boxed on its own is that sheet.
+            grazing = (thin < 0.32 and track.footprint > 1.4) or (thin < 0.08 and float(track.size[2]) > 0.50)
+            # A flat unknown wider than a plate is the counter top boxed again.
+            flat_unknown = (track.category == "unknown" and float(track.size[2]) < 0.03
+                            and track.footprint > 0.45)
+            # The segmenter names a real pair of scissors. A cabinet edge completed to that prior
+            # never received the name.
+            unnamed_scissors = (track.category == "scissors"
+                                and track.semantic_counts.get("scissors", 0.0) <= 0.0)
+            if grazing or flat_unknown or unnamed_scissors:
+                self._drop(track, "a grazing edge, not an object" if grazing else
+                           "counter top boxed as a flat unknown" if flat_unknown else
+                           "cabinet edge completed into scissors")
+        base = np.array([self.odometry["x"], self.odometry["y"], 0.0])
+        for track in list(self.tracks.values()):
+            if track.id not in self.tracks or track.held or track.category == "wall":
                 continue
             holds_robot = _inside(track, base, -0.05) and track.bottom() < 1.0
             wall_tall = track.top() >= self.config.wall_like_top and track.footprint >= 0.5
@@ -627,7 +698,8 @@ class EgoEstimator:
 
         for tid in list(self.tracks):
             track = self.tracks[tid]
-            if tid in matched or track.held or track.carried or self._in_closed_drawer(track):
+            if tid in matched or track.held or track.carried or self._in_closed_drawer(track) \
+                    or self._in_open_drawer(track):
                 continue
             centre = reading(track.pos)
             if centre is None:
@@ -705,6 +777,8 @@ class EgoEstimator:
 
     def _drop(self, track: Track, reason: str, into: Track | None = None) -> None:
         """Remove a track and record why, for the operator and for diagnosis."""
+        if track.pinned:
+            return
         del self.tracks[track.id]
         self.dropped.append({"t": round(self.stamp, 2), "id": track.id, "category": track.category,
                              "observations": track.observations, "reason": reason,
@@ -781,13 +855,16 @@ class EgoEstimator:
         tracks = [t for t in self.tracks.values() if t.voxels is not None and not t.held and not t.carried]
         for i, a in enumerate(tracks):
             for b in tracks[i + 1:]:
-                if a.id not in self.tracks or b.id not in self.tracks:
+                if a.id not in self.tracks or b.id not in self.tracks or a.pinned or b.pinned:
                     continue
                 if float(np.linalg.norm(a.pos - b.pos)) > 0.5 * max(a.footprint, b.footprint) + 0.05:
                     continue
                 receptacles = "receptacle" in a.affordances and "receptacle" in b.affordances
                 if receptacles and not self._size_match(a.footprint, b.footprint):
                     continue  # a smaller bowl nested in a larger one
+                if _drawer_beside_furniture(a, b) or _content_on_drawer(a, b):
+                    continue  # shared front-face points do not make the drawer the sideboard,
+                    # and the bear's mask includes the drawer floor without being the drawer
                 shared = {tuple(v) for v in a.voxels} & {tuple(v) for v in b.voxels}
                 if len(shared) < 0.5 * min(len(a.voxels), len(b.voxels)):
                     continue
@@ -806,6 +883,50 @@ class EgoEstimator:
                 keep.existence = max(keep.existence, drop.existence)
                 self._drop(drop, "merged: same surfaces", into=keep)
                 self._rebuild_geometry(keep, cam_p, 2.0)
+
+    def _merge_same_place(self, cam_p: np.ndarray) -> None:
+        """Fold two small raised tracks whose centres are within 8 cm into one.
+
+        A bowl and the glass beside it are further apart than that. Two segmenter names for the
+        same object, or the tight object and the wider slab it was cut out of, are not. The tighter
+        cloud is the one kept: the wider one is the table that was boxed with it. Two bowls whose
+        footprints differ by more than one view keep the track that was seen more often.
+        """
+        small = [t for t in self.tracks.values()
+                 if not t.held and not t.carried and t.footprint < 0.55 and t.bottom() > 0.3]
+        for i, a in enumerate(small):
+            for b in small[i + 1:]:
+                if a.id not in self.tracks or b.id not in self.tracks or a.pinned or b.pinned:
+                    continue
+                if ("receptacle" in a.affordances and "receptacle" in b.affordances
+                        and self._separate_bowls(a.footprint, b.footprint, a.pos, b.pos)):
+                    continue  # a smaller bowl nested in a larger one
+                if (_content_on_drawer(a, b)
+                        and {a.category, b.category} & {"pistol", "perfume_bottle"}):
+                    continue  # a pistol or perfume in the drawer is not a second name for the drawer front
+                if float(np.linalg.norm(a.pos[:2] - b.pos[:2])) > 0.08:
+                    continue
+                if abs(a.bottom() - b.bottom()) > 0.08 and abs(a.top() - b.top()) > 0.08:
+                    continue
+                # A lid and the box under it share a centre, and each end is within a few centimetres,
+                # but their bodies do not meet. Two names for one object overlap in height.
+                if min(a.top(), b.top()) < max(a.bottom(), b.bottom()) - 0.01:
+                    continue
+                keep, drop = (a, b) if _tighter(a, b) else (b, a)
+                if (a.category == "bowl" and b.category == "bowl"
+                        and self._different_bowls(a.footprint, b.footprint)):
+                    # The fuller cloud is the bowl. The tighter one is a one-sided view of it.
+                    keep, drop = (a, b) if (a.observations, a.footprint) >= (b.observations, b.footprint) else (b, a)
+                for cat, n in drop.category_counts.items():
+                    keep.category_counts[cat] = keep.category_counts.get(cat, 0.0) + n
+                _absorb_semantics(keep, drop)
+                for col, n in drop.color_counts.items():
+                    keep.color_counts[col] = keep.color_counts.get(col, 0.0) + n
+                keep.observations += drop.observations
+                keep.existence = max(keep.existence, drop.existence)
+                self._drop(drop, "merged: two names for one object", into=keep)
+                if keep.voxels is not None:
+                    self._rebuild_geometry(keep, cam_p, 2.0)
 
     def _merge_walls(self, cam_p: np.ndarray) -> None:
         """Join wall tracks that lie in one plane and meet or nearly meet along it: separate views
@@ -857,7 +978,8 @@ class EgoEstimator:
             if big.id not in self.tracks or big.footprint <= 0.3 or big.held or big.category == "wall":
                 continue
             for small in list(self.tracks.values()):
-                if small.id == big.id or small.held or small.carried or small.footprint >= big.footprint:
+                if small.id == big.id or small.held or small.carried or small.pinned or big.pinned \
+                        or small.footprint >= big.footprint:
                     continue
                 if not _inside(big, small.pos, 0.1) or abs(small.bottom() - big.bottom()) > 0.15:
                     continue
@@ -869,6 +991,11 @@ class EgoEstimator:
                 if small.footprint >= 0.3 and small.observations >= ESTABLISHED_VIEWS and small.category != big.category:
                     continue  # an established piece of furniture is not a part of something else (a sideboard
                     # in front of a wall piece misread as furniture)
+                if _drawer_beside_furniture(small, big):
+                    continue  # a drawer shares the furniture's footprint and base, and is still its own object
+                if (small.category == "drawer" and big.category == "drawer"
+                        and float(small.size[2]) <= DRAWER_MAX_HEIGHT < float(big.size[2])):
+                    continue  # the tall box is the furniture face; the short one is the drawer
                 if small.voxels is not None:
                     big.voxels = self._union(big.voxels, small.voxels)
                 _absorb_span(big, small)
@@ -920,6 +1047,74 @@ class EgoEstimator:
             if host.voxels is not None:
                 self._rebuild_geometry(host, cam_p, 2.0)
 
+    def _drop_support_top_drawers(self) -> None:
+        """Drop a short wide ``drawer`` sitting on a support beside an object already tracked.
+
+        A closed drawer is inside the furniture, so its base is well below the top. A shallow slab
+        of the support's own top, shorter than a drawer and centred within 25 cm of a cup, bowl,
+        plate, mug or glass, is that top boxed again. A taller track on a table, away from that
+        tableware, stays: the green bowl is boxed about 22 cm tall and is the object. A tall box
+        inside a counter or table and within 25 cm of that tableware is the counter face. A slab
+        wider than 0.75 m is dropped only when it sits on that top; an open drawer is that long
+        and stays. A drawer completed from the top band of a sideboard, past that sideboard's end
+        and up near its top, is dropped; an open drawer is lower and stays."""
+        hosts = [t for t in self.tracks.values()
+                 if t.category in ("counter", "table", "cabinet", "sideboard") and t.footprint >= 0.4]
+        small = [t for t in self.tracks.values()
+                 if t.category in ("cup", "bowl", "plate", "mug", "wine_glass") and t.footprint < 0.3]
+        for track in list(self.tracks.values()):
+            if track.held or track.carried or track.category != "drawer" or track.footprint < 0.3:
+                continue
+            base = track.bottom()
+            on_top = any(_inside(host, track.pos, 0.08) and abs(base - host.top()) <= 0.08
+                         for host in hosts if host.id != track.id)
+            beside = any(float(np.linalg.norm(track.pos[:2] - other.pos[:2])) <= 0.25 for other in small)
+            wide = track.footprint > 0.75
+            shallow_or_wide = float(track.size[2]) < 0.16 or wide
+            # A tall box inside the counter, next to a bowl, is the counter face. A drawer in a
+            # cabinet or sideboard has no cup or bowl beside it, so it stays.
+            in_counter = any(host.category in ("counter", "table") and _inside(host, track.pos, 0.05)
+                             for host in hosts if host.id != track.id)
+            # The sideboard's top band, completed out to a drawer's size, lands past the
+            # sideboard's end and up near its top. An open drawer slides out at drawer height.
+            past_end = any(
+                host.category in ("cabinet", "sideboard", "counter")
+                and float(np.linalg.norm(track.pos[:2] - host.pos[:2])) < 1.2
+                and host.top() - float(track.pos[2]) <= 0.12
+                and not _inside(host, track.pos, 0.05)
+                for host in hosts if host.id != track.id)
+            if (shallow_or_wide and on_top and (beside or wide)) or (in_counter and beside and not wide) or past_end:
+                self._drop(track, "support top boxed as a drawer" if not past_end else
+                           "drawer completed past the furniture")
+
+    def _drop_false_tableware(self) -> None:
+        """Drop a bowl longer than the bowl prior allows, a bowl thinner in plan than a bowl, and
+        tableware the segmenter only called a drawer.
+
+        The counter's near edge can be boxed as a bowl. :func:`max_long_extent` is that prior's
+        longest side, not the widest bowl measured in one room. A patch of an open drawer that
+        the segmenter names only ``drawer`` is completed to a plate and kept after the drawer
+        shuts, because a closed drawer is not evidence of absence."""
+        drawers = [t for t in self.tracks.values() if t.category == "drawer"]
+        for track in list(self.tracks.values()):
+            if track.held or track.category not in ("bowl", "plate", "cup"):
+                continue
+            long = float(max(track.size[0], track.size[1]))
+            cap = max_long_extent("bowl")
+            if track.category == "bowl" and cap is not None and long > cap:
+                self._drop(track, "bowl longer than the bowl prior allows")
+                continue
+            # A bowl is round in plan. A few centimetres of thickness is the lip of a cabinet
+            # seen edge-on, and that lip is close enough to a drawer to take its match.
+            if track.category == "bowl" and float(min(track.size[0], track.size[1])) < 0.08:
+                self._drop(track, "edge of a cabinet, thinner than a bowl")
+                continue
+            counts = track.semantic_counts
+            if not counts or any(name != "drawer" and score > 0.0 for name, score in counts.items()):
+                continue
+            if any(float(np.linalg.norm(track.pos[:2] - d.pos[:2])) < 0.45 for d in drawers):
+                self._drop(track, "drawer interior boxed as tableware")
+
     def _new_cloud_track(self, m: dict, cam_p: np.ndarray) -> Track:
         track = Track(id=f"e:{next(self._ids)}", category_counts=dict(m["probs"]), pos=m["centre"].copy(),
                       var=np.full(3, 0.05**2), yaw=m["yaw"], yaw_var=0.1**2, size=m["size"].copy(), observations=0,
@@ -929,8 +1124,25 @@ class EgoEstimator:
         return track
 
     def _fuse_cloud(self, track: Track, m: dict, cam_p: np.ndarray) -> None:
+        if track.pinned:
+            return
         seg = m["seg"]
         moving = track.held or track.carried
+        if not moving and track.voxels is not None:
+            centre, grown, yaw = box_of(np.vstack([_points(track.voxels), seg.points]))
+            grown_m = max(float(grown[0]), float(grown[1]))
+            tall = float(grown[2]) > DRAWER_MAX_HEIGHT
+            if track.category == "drawer" and (grown_m > DRAWER_MAX_M or tall):
+                return  # those points belong to the furniture around the drawer
+            if track.category in ("cabinet", "sideboard", "counter") and track.observations >= ESTABLISHED_VIEWS:
+                # An open drawer sticks out toward the camera. A longer piece, seen across
+                # the view, is still the furniture.
+                if prototype(track.category) is None:
+                    depth = min(float(grown[0]), float(grown[1]))
+                    if grown_m > track.footprint + 0.12 or depth > 0.62:
+                        return
+                elif _over_furniture_cap(track, grown, yaw, centre, cam_p):
+                    return
         if not moving:
             # What the robot holds was identified before the grasp; views of it in the gripper are
             # partly hidden and may mix with what lies around, so they do not relabel it.
@@ -1010,10 +1222,11 @@ class EgoEstimator:
 
     def _rebuild_geometry(self, track: Track, cam_p: np.ndarray, rng_m: float) -> None:
         """Box from the accumulated points, completed with the category's prior size along the
-        directions not yet seen; the variance shrinks with views and grows with completion. A small
-        object, which every view shows almost whole, takes the median of its recent single-view
-        boxes instead: a union of views swells when a merged duplicate or a stray view sits a few
-        centimetres off, enough to turn a mug into a bowl."""
+        directions not yet seen; the variance shrinks with views and grows with completion. A plan
+        axis already seen near broadside keeps the measured length. A small object, which every
+        view shows almost whole, takes the median of its recent single-view boxes instead: a union
+        of views swells when a merged duplicate or a stray view sits a few centimetres off, enough
+        to turn a mug into a bowl."""
         shape = SHAPES.get(track.category)
         total = sum(track.category_counts.values()) or 1.0
         if shape and shape.get("floor") and "scale" not in shape and track.voxels is not None \
@@ -1033,7 +1246,29 @@ class EgoEstimator:
             low = pts[:, 2] <= cap
             if not low.all() and int(low.sum()) >= 10:
                 track.voxels = _voxelize(pts[low])
-        centre, size, yaw = box_of(_points(track.voxels), trim=0.01)
+        cloud = _points(track.voxels)
+        core = raised_object_points(cloud)
+        bowl_core = None
+        if (core is None and track.category == "bowl"
+                and track.semantic_counts.get("bowl", 0.0) > 0.0):
+            # The segmenter already called this a bowl, and the cloud is longer than a bowl can be.
+            # A few support voxels sit apart from it. The height peel leaves them: they are not
+            # above the bowl. An anonymous cloud this long is two objects, and is not cut down to one.
+            bowl_core = oversized_bowl_core(cloud)
+            core = bowl_core
+        if core is not None:
+            track.voxels = _voxelize(core)
+            cloud = _points(track.voxels)
+        centre, size, yaw = box_of(cloud, trim=0.01)
+        if track.category == "drawer" and float(size[2]) > DRAWER_MAX_HEIGHT and len(cloud) >= 40:
+            # The mask covered the whole sideboard face. The drawer is the top band of that face;
+            # the handle sits there, not at the middle of the furniture.
+            z_hi = float(np.percentile(cloud[:, 2], 95))
+            band = cloud[cloud[:, 2] >= z_hi - 0.28]
+            if len(band) >= 20:
+                track.voxels = _voxelize(band)
+                cloud = _points(track.voxels)
+                centre, size, yaw = box_of(cloud, trim=0.01)
         if track.span is not None:
             # The sample keeps the surfaces that hold most of the points. A wide top's far edge is
             # real but only a few percent of the pixels, so the sampled box loses decimetres of
@@ -1047,18 +1282,43 @@ class EgoEstimator:
             # percent of the pixels, is missing — and it lies further from the camera.
             long_seen = float(np.max(size[:2])) > 0.85 * float(np.max(full_size[:2]))
             wide = track.category in ("counter", "sideboard", "table", "cabinet")
-            if wide and missing > 0.08 and deeper > 0.04 and long_seen:
+            if wide and missing > 0.08 and deeper > 0.04 and long_seen \
+                    and not _over_furniture_cap(track, full_size, full_yaw, full_centre, cam_p):
                 centre, size, yaw = full_centre, full_size, full_yaw
-        if max(size[0], size[1]) < SMALL_M and len(track.recent) >= 3:
+        trimmed = _trim_to_furniture_prior(track, cloud, cam_p)
+        if len(trimmed) >= 20 and trimmed is not cloud:
+            track.voxels = _voxelize(trimmed)
+            track.span = None
+            cloud = _points(track.voxels)
+            centre, size, yaw = box_of(cloud, trim=0.01)
+        if bowl_core is None and max(size[0], size[1]) < SMALL_M and len(track.recent) >= 3:
             centre = np.median([c for c, _ in track.recent], axis=0)
             size = np.median([z for _, z in track.recent], axis=0)
+        # The pill is 4 cm across. A view that also takes a strip of the drawer floor is
+        # longer than the bottle priors' own aspect, and the pill prior then loses.
+        # Only a region the segmenter called a bottle: the same proportions on a table
+        # leg must not be cut.
+        long_side = float(max(size[0], size[1]))
+        short_side = float(min(size[0], size[1]))
+        bottle = any(name in track.semantic_counts for name in ("bottle", "pill_bottle", "perfume_bottle"))
+        aspect = max_plan_aspect(("pill_bottle", "perfume_bottle"))
+        if (bottle and long_side > aspect * short_side and short_side < 0.07 and long_side < 0.25
+                and 0.05 < float(size[2]) < 0.16):
+            smeared = _trim_long_smear(cloud, short_side, aspect)
+            if smeared is not cloud:
+                track.voxels = _voxelize(smeared)
+                cloud = smeared
+                centre, size, yaw = box_of(cloud, trim=0.01)
         parent = self._furniture_of(track) if track.category == "drawer" else None
         if parent is not None:
             # A drawer slides square to its furniture: take the furniture's (well-observed) heading.
             k = round(wrap_angle(yaw - parent.yaw) / (math.pi / 2))
             centre, size, yaw = box_at_yaw(_points(track.voxels), parent.yaw + k * math.pi / 2)
         if track.observations > 1:
-            yaw, size = _continuous_heading(yaw, size, track.yaw)
+            previous = float(track.yaw)
+            yaw, size = _continuous_heading(yaw, size, previous)
+            if _plan_axes_swapped(previous, yaw):
+                track.seen_across = _swap_plan_axis(track.seen_across)
         if track.mean_rgb is not None:
             # The accumulated box is the best evidence of what the object is: classify it again,
             # with confidence growing with the number of views behind it.
@@ -1066,20 +1326,56 @@ class EgoEstimator:
             probs = self.category_probs(size, centre[2] - size[2] / 2, track.mean_rgb, track.mean_invalid,
                                         track.bottom_seen, mean)
             weight = float(min(track.observations, 20))
-            track.category_counts = {k: v * weight for k, v in probs.items()}
+            # A short track keeps the drawer name when the shape prior prefers the furniture
+            # around it. The top band of the sideboard is as wide as the sideboard and still a drawer.
+            # A tall face is cut down to that band before this, so height is what decides.
+            top = max(probs, key=probs.get) if probs else ""
+            furniture = top in ("cabinet", "sideboard", "counter", "table")
+            drawer_sized = float(size[2]) <= DRAWER_MAX_HEIGHT and float(max(size[0], size[1])) <= 1.50
+            # A later mask of the open drawer must not rename the bear or the pistol.
+            # The bear's own mask is wider than the prior because it includes the drawer
+            # floor, so the shape prior says drawer even when SAM says teddy bear.
+            sam_top = max(mean, key=mean.get) if mean else ""
+            sam_content = (sam_top in _CONTENT and top == "drawer"
+                           and float(max(size[0], size[1])) < 0.35 and float(size[2]) < 0.25)
+            keep_content = (track.category in _CONTENT and top == "drawer"
+                            and float(max(size[0], size[1])) < 0.32)
+            if sam_content:
+                track.category_counts = {sam_top: weight}
+            elif not keep_content and not (track.category == "drawer" and furniture and drawer_sized):
+                track.category_counts = {k: v * weight for k, v in probs.items()}
         proto = prototype(track.category) if track.category_counts else None
         shift = np.zeros(3)
         completion = 0.0
         total = sum(track.category_counts.values())
-        if proto is not None and track.category_counts[track.category] / total > 0.6:
+        measured_bottom = float(centre[2] - size[2] / 2)
+        # A shallow cloud resting high up is the table top boxed with a bowl, not a drawer front.
+        # Completing it to a drawer's size is what makes that bowl a 22 cm drawer.
+        shallow_top = track.category == "drawer" and float(size[2]) < 0.12 and measured_bottom > 0.65
+        if proto is not None and not shallow_top and track.category_counts[track.category] / total > 0.6:
             long_side, short_side, height = proto
             axes = [(0, long_side, np.array([math.cos(yaw), math.sin(yaw), 0.0])),
                     (1, short_side, np.array([-math.sin(yaw), math.cos(yaw), 0.0]))]
             away = centre - cam_p
             view = away[:2] / max(float(np.linalg.norm(away[:2])), 1e-6)
+            # The airplane prior is 6 cm tall and the measured wing is 10 cm. Filling the prior
+            # width on that box invents a footprint and the track is then merged away.
+            too_tall = track.category == "toy_airplane" and float(size[2]) > height
             for k, want, axis in axes:
-                # Only the extent along the viewing direction hides behind the visible surface; the
-                # extent across it is the silhouette and is seen in full.
+                across = abs(float(view @ axis[:2])) < SEEN_ACROSS_DOT
+                if across and size[k] >= FULL_AXIS * want:
+                    track.seen_across |= 1 << k
+            for k, want, axis in axes:
+                if too_tall:
+                    continue
+                # A side remembered from an earlier broadside view keeps that length when the
+                # current cloud only shows the end. A facing side already half a metre, and
+                # already most of the prior, is the piece: 0.9 m of a 1.2 m table is not a
+                # hidden face. A shorter extent facing the camera is still a drawer's depth.
+                if track.seen_across & (1 << k):
+                    continue
+                if size[k] >= SEEN_FACE_M and size[k] >= FULL_AXIS * want:
+                    continue
                 if abs(float(view @ axis[:2])) < 0.3:
                     continue
                 if size[k] < 0.85 * want:
@@ -1117,8 +1413,26 @@ class EgoEstimator:
             # surface (or receptacle floor) just below its visible part.
             level = self._resting_level(track, centre, bottom)
             if level is not None and level < bottom:
-                size[2] += bottom - level
-                centre[2] -= (bottom - level) / 2
+                gap = bottom - level
+                size[2] += gap
+                centre[2] -= gap / 2
+                # The name was decided on the visible part. Any gap filled down to the table can
+                # push a rim past a bowl's height, so the category is decided again on the filled box.
+                if gap >= 0.01 and track.mean_rgb is not None:
+                    self._reclassify_filled_height(track, size, centre)
+        # Colour is applied after the filled-height rename. That rename uses the shape prior,
+        # which calls a yellow airplane a bowl because the airplane prior is only 6 cm tall.
+        named = content_color_name(size, track.mean_rgb, track.mean_invalid, track.category)
+        if named is None:
+            named = sideboard_not_counter(size, track.category, track.mean_rgb, track.mean_invalid)
+        if named is None:
+            named = partial_pistol(size, track.category, track.mean_rgb, track.mean_invalid)
+        if named is None:
+            named = perfume_without_bottle_label(size, track.category, track.semantic_counts)
+            if named is not None and not self._beside_drawer(centre):
+                named = None
+        if named is not None and named != track.category:
+            track.category_counts = {named: float(min(max(track.observations, 1), 20))}
         track.pos = centre
         track.size = size
         track.yaw = yaw
@@ -1128,6 +1442,21 @@ class EgoEstimator:
         var_xy = sigma_depth**2 / views + (completion / 4.0) ** 2 + 0.002**2
         track.var = np.array([var_xy, var_xy, sigma_depth**2 / views + 0.002**2])
         track.yaw_var = 0.05**2 / views
+
+    def _reclassify_filled_height(self, track: Track, size: np.ndarray, centre: np.ndarray) -> None:
+        """Replace the category using the box after it was extended down onto its support.
+
+        Labels whose tallest plausible height is below ``size[2]`` are left out. The shape prior
+        then names the object from the filled height: a rim extended across a stem becomes a
+        wine glass, while the label it was given as a shallow disk does not stay.
+        """
+        mean = {k: v / track.semantic_views for k, v in track.semantic_counts.items()} if track.semantic_views else None
+        if mean:
+            mean = _labels_within_height(mean, float(size[2]))
+        probs = self.category_probs(size, float(centre[2] - size[2] / 2), track.mean_rgb, track.mean_invalid,
+                                    track.bottom_seen, mean or None)
+        weight = float(min(track.observations, 20))
+        track.category_counts = {k: v * weight for k, v in probs.items()}
 
     def _gate(self, track: Track, sigma: float) -> float:
         """Association gate: measurement and track uncertainty, widened for large objects whose
@@ -1139,6 +1468,27 @@ class EgoEstimator:
     def _size_match(self, a: float, b: float) -> bool:
         """Footprints of the same object agree within the detector's size noise; nested bowls do not."""
         return abs(math.log(max(a, 1e-3) / max(b, 1e-3))) <= self.config.size_match_log
+
+    def _different_bowls(self, a: float, b: float) -> bool:
+        """Whether two bowl footprints differ by more than one noisy view of a single bowl."""
+        return abs(math.log(max(a, 1e-3) / max(b, 1e-3))) > self.config.nested_bowl_log
+
+    def _separate_bowls(self, foot_a: float, foot_b: float, xy_a: np.ndarray, xy_b: np.ndarray) -> bool:
+        """Whether two bowl regions are a smaller bowl nested in a larger one.
+
+        Nesting shares a centre: the offset stays within :data:`NEST_CENTER_SHARE` of the smaller
+        radius. A partial view of one bowl is shifted further, toward the side the camera saw.
+
+        :param foot_a: footprint of the first region, in metres.
+        :param foot_b: footprint of the second region, in metres.
+        :param xy_a: centre of the first region.
+        :param xy_b: centre of the second region.
+        :returns: true when the footprints differ by more than one view of one bowl and the centres coincide.
+        """
+        if not self._different_bowls(foot_a, foot_b):
+            return False
+        offset = float(np.linalg.norm(np.asarray(xy_a)[:2] - np.asarray(xy_b)[:2]))
+        return offset <= NEST_CENTER_SHARE * min(foot_a, foot_b) / 2
 
     def _candidates(self, category: str, pos: np.ndarray, sigma: float, footprint: float | None = None) -> list[Track]:
         """Tracks a detection may belong to: a compatible category, a matching size and within the gate."""
@@ -1267,7 +1617,8 @@ class EgoEstimator:
 
         for tid in list(self.tracks):
             track = self.tracks[tid]
-            if tid in matched or track.held or track.carried or self._in_closed_drawer(track):
+            if tid in matched or track.held or track.carried or self._in_closed_drawer(track) \
+                    or self._in_open_drawer(track):
                 continue
             if not in_view(track.pos):
                 continue
@@ -1490,6 +1841,20 @@ class EgoEstimator:
         holder = self.support_of(track)
         return holder is not None and holder.category == "drawer" and self.drawer_opening(holder) < 0.08
 
+    def _in_open_drawer(self, track: Track) -> bool:
+        """A small track on the floor of a drawer that is currently pulled out.
+
+        A side step looks through the place the track occupied a moment ago. That view is not
+        evidence the object is gone; the drawer still holds it."""
+        if track.footprint >= 0.3:
+            return False
+        for drawer in self.tracks.values():
+            if drawer.category != "drawer" or drawer.id == track.id or self.drawer_opening(drawer) < 0.08:
+                continue
+            if track.id in self._on_drawer_floor(drawer):
+                return True
+        return False
+
     def drawer_opening(self, drawer: Track) -> float:
         """How far a drawer sticks out of the furniture holding it, along the drawer's front axis."""
         furniture = [_box2d(t) for t in self.tracks.values()
@@ -1537,21 +1902,213 @@ class EgoEstimator:
         self.version += 1
         return True
 
+    def _on_drawer_floor(self, drawer: Track) -> list[str]:
+        """Small tracks on a drawer's floor, including ones just in front of its box."""
+        box = self.front(drawer)
+        found = []
+        for other in self.tracks.values():
+            if other.id == drawer.id or other.held or other.footprint >= 0.3:
+                continue
+            if other.category in ("cabinet", "sideboard", "counter", "table", "wall", "drawer"):
+                continue
+            # The drawer box is often taller than the drawer, so bottoms do not line up.
+            # A content sits inside that box, not under it.
+            if other.bottom() < drawer.bottom() - 0.02 or float(other.pos[2]) > drawer.top() + 0.02:
+                continue
+            dx, dy = float(other.pos[0] - box.cx), float(other.pos[1] - box.cy)
+            c, s = math.cos(-box.yaw), math.sin(-box.yaw)
+            lx, ly = c * dx - s * dy, s * dx + c * dy
+            if abs(ly) > box.hy + 0.08:
+                continue
+            # Either side of the box: the open side is not always the one front() picked.
+            if abs(lx) <= box.hx + 0.45:
+                found.append(other.id)
+        return found
+
+    def _translate_track(self, track: Track, delta: np.ndarray) -> None:
+        step = np.asarray(delta, float)
+        track.pos = track.pos + step
+        if track.voxels is not None:
+            track.voxels = _voxelize(_points(track.voxels) + step)
+        if track.span is not None:
+            track.span = track.span + step
+
+    def _trim_shut_drawer(self, track: Track, step: np.ndarray) -> None:
+        """Drop the open-travel points a shut drawer still carries.
+
+        The voxels moved with the drawer, so the cloud keeps the length it had while open.
+        The face the close moved away from is the front. Points further than the drawer
+        prior behind that face are the cabinet the open mask took in.
+
+        :param step: the translation just applied, metres. Its horizontal direction
+            points into the furniture.
+        """
+        proto = prototype("drawer")
+        if proto is None or track.voxels is None:
+            return
+        direction = np.asarray(step[:2], float)
+        norm = float(np.linalg.norm(direction))
+        if norm < 1e-6:
+            return
+        direction /= norm
+        cloud = _points(track.voxels)
+        proj = cloud[:, 0] * direction[0] + cloud[:, 1] * direction[1]
+        front = float(np.min(proj))
+        limit = proto[0] + 0.04
+        if float(np.max(proj) - front) <= limit:
+            return
+        kept = cloud[proj <= front + limit]
+        if len(kept) < 20:
+            return
+        track.voxels = _voxelize(kept)
+        track.span = None
+        centre, size, yaw = box_of(kept, trim=0.01)
+        track.pos, track.size, track.yaw = centre, size, float(yaw)
+
+    def _beside_drawer(self, centre: np.ndarray) -> bool:
+        """Whether a small box is at the height of a drawer and within 0.70 m of one."""
+        for other in self.tracks.values():
+            if other.category != "drawer":
+                continue
+            if not (0.45 <= float(centre[2]) <= 0.90):
+                continue
+            if float(np.linalg.norm(other.pos[:2] - centre[:2])) <= 0.70:
+                return True
+        return False
+
+    def _near_drawer(self, drawer: Track) -> list[str]:
+        """Small tracks within 0.70 m of a drawer, at the height of its contents.
+
+        The estimated drawer box often does not contain them yet. They are still what the pull
+        carried, and a side step must not delete them."""
+        found = []
+        for other in self.tracks.values():
+            if other.id == drawer.id or other.held or other.footprint >= 0.3:
+                continue
+            if other.category in ("cabinet", "sideboard", "counter", "table", "wall", "drawer"):
+                continue
+            if not (0.45 <= float(other.pos[2]) <= 0.90):
+                continue
+            if float(np.linalg.norm(other.pos[:2] - drawer.pos[:2])) <= 0.70:
+                found.append(other.id)
+        return found
+
+    def _drawer_now(self, drawer_id: str, before: dict[str, list[float]]) -> Track | None:
+        """The drawer track after a merge may have changed id. Follow that, or the nearest drawer."""
+        seen: set[str] = set()
+        current: str | None = drawer_id
+        while current and current not in seen:
+            seen.add(current)
+            track = self.tracks.get(current)
+            if track is not None and track.category == "drawer":
+                return track
+            nxt = None
+            for record in reversed(self.dropped):
+                if record.get("id") == current and record.get("into"):
+                    nxt = str(record["into"])
+                    break
+            current = nxt
+        if not before:
+            return None
+        centre = np.mean([np.asarray(v, float)[:2] for v in before.values()], axis=0)
+        best: tuple[float, Track] | None = None
+        for track in self.tracks.values():
+            if track.category != "drawer":
+                continue
+            dist = float(np.linalg.norm(track.pos[:2] - centre))
+            if best is None or dist < best[0]:
+                best = (dist, track)
+        if best is not None and best[0] < 1.0:
+            return best[1]
+        return None
+
+    def content_positions(self, drawer_id: str) -> dict[str, list[float]]:
+        """Where each small track near ``drawer_id`` is, before the drawer is pushed back."""
+        drawer = self.tracks.get(drawer_id)
+        if drawer is None:
+            return {}
+        return {tid: self.tracks[tid].pos.tolist() for tid in self._near_drawer(drawer)}
+
+    def resettle(self, drawer_id: str, delta: np.ndarray, before: dict[str, list[float]]) -> list[str]:
+        """Move contents that are still where the open drawer left them.
+
+        ``before`` is :meth:`content_positions` from just before the close. A track already carried
+        by :meth:`shift` has left that place and is left alone. A track that appeared only in a
+        late frame of the open drawer is still out in front, and is brought back by ``delta``."""
+        drawer = self._drawer_now(drawer_id, before)
+        if drawer is None:
+            return []
+        direction = np.asarray(delta, float)
+        moved: list[str] = []
+        for tid, old in before.items():
+            track = self.tracks.get(tid)
+            if track is None or track.held or track.pinned:
+                continue
+            if float(np.linalg.norm(track.pos - np.asarray(old, float))) > 0.04:
+                continue
+            self._translate_track(track, direction)
+            moved.append(tid)
+        outward = -direction[:2]
+        norm = float(np.linalg.norm(outward))
+        axis = outward / norm if norm > 1e-6 else None
+        for tid in self._near_drawer(drawer):
+            if tid in before or tid in moved:
+                continue
+            track = self.tracks[tid]
+            if track.pinned:
+                continue
+            if axis is not None:
+                along = float((track.pos[:2] - drawer.pos[:2]) @ axis)
+                if along < 0.10:
+                    continue
+            self._translate_track(track, direction)
+            moved.append(tid)
+        if moved:
+            self.version += 1
+        return moved
+
     def shift(self, track_id: str, delta: np.ndarray) -> list[str]:
         """Move a track the robot itself moved (a drawer it pulled) together with what it holds."""
         track = self.tracks.get(track_id)
         if track is None:
             return []
         carried = [t.id for t in self.tracks.values() if t.id != track_id and not t.held and self.support_of(t) is track]
+        # A content seen in the open drawer can sit just past the box, so support_of misses it.
+        for tid in self._on_drawer_floor(track):
+            if tid not in carried:
+                carried.append(tid)
+        step = np.asarray(delta, float)
+        opening_before = self.drawer_opening(track) if track.category == "drawer" else None
         for tid in [track_id, *carried]:
-            moved = self.tracks[tid]
-            moved.pos = moved.pos + np.asarray(delta, float)
-            if moved.voxels is not None:
-                moved.voxels = _voxelize(_points(moved.voxels) + np.asarray(delta, float))
-            if moved.span is not None:
-                moved.span = moved.span + np.asarray(delta, float)
+            self._translate_track(self.tracks[tid], step)
+        if opening_before is not None and self.drawer_opening(track) < 0.08 and opening_before > self.drawer_opening(track):
+            self._trim_shut_drawer(track, step)
+        if track.category == "drawer" and float(np.linalg.norm(step)) >= 0.05:
+            self._drop_drawers_left_behind(track)
         self.version += 1
         return carried
+
+    def _drop_drawers_left_behind(self, moved: Track) -> None:
+        """Drop drawer tracks that stayed put while ``moved`` was pulled.
+
+        A second box completed from the furniture's top band does not slide. The drawer is the
+        track that translated with the pull, not the one nearest the furniture's centre.
+
+        :param moved: the drawer track the robot just translated.
+        """
+        for host in list(self.tracks.values()):
+            if host.category not in ("cabinet", "sideboard"):
+                continue
+            if float(np.linalg.norm(moved.pos[:2] - host.pos[:2])) > 1.2:
+                continue
+            for other in list(self.tracks.values()):
+                if other.id == moved.id or other.held or other.category != "drawer":
+                    continue
+                if other.id not in self.tracks:
+                    continue
+                dist = float(np.linalg.norm(other.pos[:2] - host.pos[:2]))
+                if dist < 1.0 and host.bottom() - 0.05 <= float(other.pos[2]) <= host.top() + 0.05:
+                    self._drop(other, "drawer that did not move with the pull")
 
     def to_scene(self, self_frame: dict | None = None) -> SceneState:
         """The Ego State as a scene.
@@ -1692,6 +2249,15 @@ def color_name(rgb: np.ndarray, invalid_frac: float = 0.0) -> str:
 
 
 VOXEL = 0.01
+NEST_CENTER_SHARE = 0.35  # nested bowls share a centre, within this share of the smaller radius
+# A quarter-turn look-around includes a heading within 45 degrees of broadside. cos of that
+# angle is 0.707, so a view that meets a plan axis less strongly than this can show both ends.
+# The memory is kept only when the measured length is already most of the prior: a face a few
+# centimetres thick is still the hidden side, and a later view fills it. A facing side is left
+# as measured only when it is already half a metre and most of the prior.
+SEEN_ACROSS_DOT = 0.75
+FULL_AXIS = 0.65
+SEEN_FACE_M = 0.50  # a facing side this long, and already most of the prior, is the piece itself
 ESTABLISHED_VIEWS = 5
 HELD_FALLBACK_M = 0.1
 YAW_MOVED = 0.3  # a detected heading this far off a track's means the object was turned
@@ -1702,6 +2268,133 @@ HELD_LARGER = 2.0  # a region with a footprint this many times the held object's
 CONVEX_CHECK_M = 0.8  # boxes longer than this are checked for being filled rather than an outline
 MIN_FOOTPRINT_FILL = 0.2
 SMALL_M = 0.3
+# A bear, pistol or bottle already named from its own mask. A later view that calls the
+# same small box a drawer is the drawer behind it, not a new name for the object.
+_CONTENT = ("teddy_bear", "pistol", "pill_bottle", "perfume_bottle", "toy_airplane")
+DRAWER_MAX_M = 1.05  # an open drawer is about 0.9 m long; the sideboard around it is 1.4 m
+DRAWER_MAX_HEIGHT = 0.40  # a drawer front is about 0.22 m tall; the sideboard face behind it is 0.85 m
+_FURNITURE_CAP = ("cabinet", "sideboard", "counter")
+_FURNITURE_LONG_PAD = 0.08  # past the prior long side: still the piece, not the open drawer
+_FURNITURE_SHORT_PAD = 0.06
+
+
+def _trim_long_smear(cloud: np.ndarray, width: float | None = None, aspect: float = 2.2) -> np.ndarray:
+    """Drop a one-axis smear from a small raised box.
+
+    A pill bottle is about 4 cm across. A mask that also takes a strip of the drawer floor
+    is longer than the bottle priors' aspect, and the pill prior then cannot win. The short
+    side is the object; the long side is the strip.
+
+    :param aspect: long/short ratio past which the long side is the strip. The caller passes
+        the bottle priors' own ratio.
+    """
+    if len(cloud) < 20:
+        return cloud
+    centre, size, yaw = box_of(cloud, trim=0.0)
+    long = float(max(size[0], size[1]))
+    short = float(min(size[0], size[1]))
+    height = float(size[2])
+    if long < aspect * short or short >= 0.08 or long >= 0.30 or not (0.05 < height < 0.16):
+        return cloud
+    band = short if width is None else float(width)
+    if band >= 0.08 or band <= 0.0:
+        return cloud
+    c, s = math.cos(float(yaw)), math.sin(float(yaw))
+    rel = cloud[:, :2] - centre[:2]
+    lx = rel[:, 0] * c + rel[:, 1] * s
+    ly = -rel[:, 0] * s + rel[:, 1] * c
+    # The long side of the point set, not size[0]: the box heading is not always that side.
+    local = lx if float(np.ptp(lx)) >= float(np.ptp(ly)) else ly
+    keep = np.abs(local - float(np.median(local))) <= band * 0.5
+    if int(keep.sum()) < 15:
+        return cloud
+    return cloud[keep]
+
+
+def _over_furniture_cap(track: Track, size: np.ndarray, yaw: float, centre: np.ndarray,
+                       cam_p: np.ndarray) -> bool:
+    """Whether the extent toward the camera is past the furniture prior.
+
+    That extent is an open drawer. A longer piece, whose extra length lies across the view,
+    is the furniture itself and is not past the cap.
+
+    :param size: full extents of the box, metres.
+    :param yaw: heading of the box x axis, radians.
+    :param centre: box centre, metres.
+    :param cam_p: camera position, metres.
+    :returns: true when a camera-facing axis exceeds the prior pad.
+    """
+    if track.category not in _FURNITURE_CAP or track.observations < ESTABLISHED_VIEWS:
+        return False
+    proto = prototype(track.category)
+    if proto is None:
+        return False
+    long_cap = proto[0] + _FURNITURE_LONG_PAD
+    short_cap = proto[1] + _FURNITURE_SHORT_PAD
+    caps = (long_cap, short_cap) if float(size[0]) >= float(size[1]) else (short_cap, long_cap)
+    for axis in (0, 1):
+        if float(size[axis]) <= caps[axis]:
+            continue
+        if _faces_camera(yaw, axis, centre, cam_p):
+            return True
+    return False
+
+
+def _faces_camera(yaw: float, axis: int, centre: np.ndarray, cam_p: np.ndarray) -> bool:
+    """Whether plan axis ``axis`` of a box points toward the camera.
+
+    :param yaw: heading of the box x axis, radians.
+    :param axis: 0 for the box x axis, 1 for the box y axis.
+    :param centre: box centre, metres.
+    :param cam_p: camera position, metres.
+    :returns: true when the axis is within :data:`SEEN_ACROSS_DOT` of the view.
+    """
+    away = np.asarray(centre[:2], float) - np.asarray(cam_p[:2], float)
+    norm = float(np.linalg.norm(away))
+    if norm < 1e-6:
+        return True
+    view = away / norm
+    direction = np.array([math.cos(yaw), math.sin(yaw)]) if axis == 0 else np.array([-math.sin(yaw), math.cos(yaw)])
+    return abs(float(view @ direction)) >= SEEN_ACROSS_DOT
+
+
+def _trim_to_furniture_prior(track: Track, cloud: np.ndarray, cam_p: np.ndarray) -> np.ndarray:
+    """Drop points that stick out past a furniture prior, on the side toward the camera.
+
+    That side is the open drawer. A longer piece seen across the view is left as measured.
+    ``cloud`` is returned unchanged when the box already fits."""
+    if len(cloud) < 20:
+        return cloud
+    centre, size, yaw = box_of(cloud, trim=0.01)
+    if not _over_furniture_cap(track, size, yaw, centre, cam_p):
+        return cloud
+    centre, size, yaw = box_of(cloud, trim=0.0)
+    proto = prototype(track.category)
+    if proto is None:
+        return cloud
+    long_cap = proto[0] + _FURNITURE_LONG_PAD
+    short_cap = proto[1] + _FURNITURE_SHORT_PAD
+    caps = (long_cap, short_cap) if float(size[0]) >= float(size[1]) else (short_cap, long_cap)
+    c, s = math.cos(float(yaw)), math.sin(float(yaw))
+    rel = cloud[:, :2] - centre[:2]
+    local = np.column_stack([rel[:, 0] * c + rel[:, 1] * s, -rel[:, 0] * s + rel[:, 1] * c])
+    cam = np.asarray(cam_p[:2], float) - centre[:2]
+    cam_l = np.array([float(cam[0] * c + cam[1] * s), float(-cam[0] * s + cam[1] * c)])
+    keep = np.ones(len(cloud), dtype=bool)
+    for axis in (0, 1):
+        if float(size[axis]) <= caps[axis]:
+            continue
+        if not _faces_camera(yaw, axis, centre, cam_p):
+            continue
+        coord = local[:, axis]
+        lo, hi = float(coord.min()), float(coord.max())
+        if cam_l[axis] >= 0.0:
+            keep &= coord <= lo + caps[axis]
+        else:
+            keep &= coord >= hi - caps[axis]
+    if int(keep.sum()) < 20:
+        return cloud
+    return cloud[keep]
 RECENT_VIEWS = 12
 APPEARANCE_SIZE_CHANGE = 0.2  # an extent this much off the one a face grid was laid out for starts a new grid
 SQUARE_SIDES = 0.9  # a footprint whose shorter side is at least this share of the longer is square
@@ -1770,6 +2463,21 @@ SEE_THROUGH_DEG = 5.0
 SEE_THROUGH_M = 0.15
 
 
+def _content_on_drawer(a: Track, b: Track) -> bool:
+    """A bear, pistol or bottle that shares points with the drawer is still its own object.
+
+    The mask takes some of the drawer floor with the object. Those shared points are not
+    a reason to fold the object into the drawer."""
+    return ((a.category in _CONTENT and b.category == "drawer")
+            or (b.category in _CONTENT and a.category == "drawer"))
+
+
+def _drawer_beside_furniture(a: Track, b: Track) -> bool:
+    """A drawer and the cabinet, sideboard, counter or table it is set into are not one object."""
+    furniture = ("cabinet", "sideboard", "counter", "table")
+    return (a.category == "drawer" and b.category in furniture) or (b.category == "drawer" and a.category in furniture)
+
+
 def _stacked(a_bottom: float, a_top: float, b_bottom: float, b_top: float, b_centre: float, bases_seen: bool) -> bool:
     """Whether box b rests on top of box a, or a on b, rather than being a view of the same object:
     with both bases seen, one lies wholly above the other's top face."""
@@ -1785,8 +2493,10 @@ def _identified(track: Track) -> bool:
     at least ``IDENTIFIED_SHARE`` of its accumulated category evidence."""
     total = sum(track.category_counts.values())
     category = track.category
+    # A label names the track after the votes that earned it have been replaced.
+    share = track.category_counts.get(category, 0.0)
     return track.observations >= ESTABLISHED_VIEWS and category != "unknown" and total > 0 \
-        and track.category_counts[category] / total >= IDENTIFIED_SHARE
+        and share / total >= IDENTIFIED_SHARE
 
 
 def _named(track: Track, min_score: float) -> bool:
@@ -1836,6 +2546,41 @@ def _absorb_span(keep: Track, drop: Track) -> None:
     keep.span = _larger_span(keep.span, drop.span)
 
 
+def _labels_within_height(semantics: dict[str, float], height: float) -> dict[str, float]:
+    """``semantics`` without tableware categories whose prior height cannot reach ``height``.
+
+    The prior may be overshot by :data:`OVER`, and a scaled category may be as tall as its largest
+    scale. A measured box above that is not that category. Floor-standing categories and drawers
+    stay: a cabinet slice is often narrower than 0.3 m and taller than a drawer, and dropping
+    ``drawer`` there renames the slice so it is folded into the cabinet.
+    """
+    limit = math.exp(OVER)
+    kept = {}
+    for cat, score in semantics.items():
+        shape = SHAPES.get(cat)
+        if shape is None or shape.get("floor") or cat == "drawer":
+            kept[cat] = score
+            continue
+        hi = shape.get("scale", (1.0, 1.0))[1]
+        # A bottle mask that includes the surface under it is about a centimetre taller than
+        # the bottle. Dropping the name there leaves the generic bottle, which has no shape prior.
+        if height <= shape["dims"][2] * hi * limit + 0.015:
+            kept[cat] = score
+    return kept
+
+
+def _tighter(a: Track, b: Track) -> bool:
+    """Whether ``a`` is the object and ``b`` is a flat or wider duplicate of it.
+
+    A rim a couple of centimetres tall is the top of the cup, not a better box than the cup.
+    Otherwise the smaller footprint is the object cut off the table, and the wider one is the table.
+    """
+    if a.size[2] >= 0.04 > b.size[2]:
+        return True
+    if b.size[2] >= 0.04 > a.size[2]:
+        return False
+    return a.footprint <= b.footprint
+
 def _absorb_semantics(keep: Track, drop: Track) -> None:
     """Add the segmenter evidence of a track merged away to the track that keeps it."""
     for cat, n in drop.semantic_counts.items():
@@ -1880,6 +2625,24 @@ def _continuous_heading(yaw: float, size: np.ndarray, previous: float) -> tuple[
     if square and turns % 2:
         size = size[[1, 0, 2]]
     return wrap_angle(yaw + turns * step), size
+
+
+def _plan_axes_swapped(previous: float, yaw: float) -> bool:
+    """Whether the box x axis now lies where its y axis did.
+
+    A square footprint can turn a quarter to stay near the previous heading, and that swaps the
+    plan extents. A memory of which extent was seen in full has to swap with them.
+
+    :param previous: heading before this fit, radians.
+    :param yaw: heading after :func:`_continuous_heading`, radians.
+    :returns: true when the turn is a quarter turn.
+    """
+    return abs(abs(wrap_angle(yaw - previous)) - math.pi / 2) < 0.2
+
+
+def _swap_plan_axis(bits: int) -> int:
+    """Exchange the two plan-axis bits of ``seen_across``."""
+    return ((bits & 1) << 1) | ((bits >> 1) & 1)
 
 
 def _footprint_fill(points: np.ndarray, centre: np.ndarray, size: np.ndarray, yaw: float, cell: float = 0.05) -> float:

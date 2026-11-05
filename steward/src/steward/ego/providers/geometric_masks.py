@@ -213,6 +213,7 @@ def masks_from_depth(
     fovy_deg: float,
     config: GeometricMaskConfig | None = None,
     up_cam: np.ndarray | None = None,
+    supports_only: bool = False,
 ) -> np.ndarray:
     cfg = config or GeometricMaskConfig()
     rng = np.random.default_rng(cfg.seed)
@@ -281,7 +282,7 @@ def masks_from_depth(
             instances.append(idx)
             claimed[idx] = True
 
-    residual = ~claimed
+    residual = np.zeros(len(pts), dtype=bool) if supports_only else ~claimed
     if int(residual.sum()) >= cfg.min_pixels:
         res_ids = np.nonzero(residual)[0]
         for cidx in _voxel_components(

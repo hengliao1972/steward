@@ -76,6 +76,95 @@ def _color_score(rule: str | None, color: np.ndarray, invalid_frac: float) -> fl
     return 0.0
 
 
+def content_color_name(size: np.ndarray, color: np.ndarray | None, invalid_frac: float,
+                       category: str) -> str | None:
+    """A more specific name when colour separates two categories the detector confuses.
+
+    A SAM score outweighs the shape prior, so a pink bottle called a pill bottle, a white
+    smear called a generic bottle, a yellow airplane called a bowl, and a brown bear called
+    a drawer all stay wrong. Colour decides those pairs, and only for a box the size of the
+    content. Returns None to keep ``category``.
+
+    :param size: full extents of the measured box, metres.
+    :param color: mean RGB in 0..1, or None when the view had no colour.
+    :param invalid_frac: fraction of the region whose depth was missing.
+    :param category: the name the fused probabilities currently give the track.
+    :returns: the replacement category, or None.
+    """
+    if color is None:
+        return None
+    long = float(max(size[0], size[1]))
+    short = float(min(size[0], size[1]))
+    height = float(size[2])
+    if long > 0.35 or height < 0.02:
+        return None
+    if (_color_score("pink", color, invalid_frac) >= 0 and category in ("pill_bottle", "bottle", "cup")
+            and long < 0.12 and height > 0.05):
+        return "perfume_bottle"
+    if (_color_score("white", color, invalid_frac) >= 0 and category == "bottle"
+            and short < 0.08 and long < 0.12 and 0.05 < height < 0.15):
+        return "pill_bottle"
+    if (_color_score("yellow", color, invalid_frac) >= 0 and category in ("bowl", "plate", "box")
+            and long >= 0.12 and short >= 0.07 and height < 0.14):
+        return "toy_airplane"
+    if (_color_score("brown", color, invalid_frac) >= 0 and category in ("drawer", "box", "unknown")
+            and 0.08 < long < 0.22 and height > 0.10):
+        return "teddy_bear"
+    # A dark cup is the mug. Cup has no colour of its own, so a black mug that SAM calls a cup stays a cup.
+    if (_color_score("dark", color, invalid_frac) >= 0 and category == "cup"
+            and long < 0.16 and 0.04 < height < 0.14):
+        return "mug"
+    return None
+
+
+def sideboard_not_counter(size: np.ndarray, category: str, color: np.ndarray | None,
+                          invalid_frac: float) -> str | None:
+    """The sideboard, when a counter label sits on a sideboard-sized walnut piece.
+
+    The counter is about 1.85 m by 0.62 m and white. The sideboard is about 1.42 m by 0.49 m.
+    SAM's counter score outweighs that difference. A white piece is left as a counter.
+
+    :param size: full extents of the measured box, metres.
+    :param category: the name the fused probabilities currently give the track.
+    :param color: mean RGB in 0..1, or None when the view had no colour.
+    :param invalid_frac: fraction of the region whose depth was missing.
+    :returns: ``sideboard``, or None to keep ``category``.
+    """
+    if category != "counter":
+        return None
+    long = float(max(size[0], size[1]))
+    short = float(min(size[0], size[1]))
+    height = float(size[2])
+    if not (1.15 < long < 1.60 and 0.40 < short < 0.56 and 0.70 < height < 0.95):
+        return None
+    if color is not None and _color_score("white", color, invalid_frac) >= 0:
+        return None
+    return "sideboard"
+
+
+def perfume_without_bottle_label(size: np.ndarray, category: str, semantics: dict[str, float]) -> str | None:
+    """The perfume, when the detector never called the region a bottle.
+
+    The pill bottle is the region SAM names. The perfume's mask is the drawer around a
+    square box about 12 cm tall, and that box fits the pill's footprint, so the shape
+    prior says pill. A box this tall that SAM did not call a pill is the perfume.
+
+    :param size: full extents of the measured box, metres.
+    :param category: the name the fused probabilities currently give the track.
+    :param semantics: summed segmenter scores for the track.
+    :returns: ``perfume_bottle``, or None to keep ``category``.
+    """
+    if category not in ("pill_bottle", "bottle"):
+        return None
+    if any(semantics.get(name, 0.0) > 0.0 for name in ("pill_bottle", "bottle", "perfume_bottle")):
+        return None
+    long = float(max(size[0], size[1]))
+    height = float(size[2])
+    if long > 0.06 or not (0.105 < height < 0.16):
+        return None
+    return "perfume_bottle"
+
+
 def classify(size: np.ndarray, bottom: float, color: np.ndarray, invalid_frac: float = 0.0,
              temperature: float = 1.0, bottom_seen: bool = True, min_prob: float = 0.01) -> dict[str, float]:
     """Probability per category for a measured box (full extents, long side first) whose lowest
@@ -124,6 +213,63 @@ def classify(size: np.ndarray, bottom: float, color: np.ndarray, invalid_frac: f
     return {k: v / total for k, v in weights.items() if v / total > min_prob}
 
 
+_BOTTLE_FAMILY = ("pill_bottle", "perfume_bottle")
+
+
+def shape_over_bottle(fused: dict[str, float], shape: dict[str, float]) -> dict[str, float]:
+    """The bottle prior that fits, when the fused winner is the generic name ``bottle``.
+
+    ``bottle`` has no template. It names a family. The segmenter has said which family; the
+    prior picks the member. A cup that merely fits the box is not in that family, so it does
+    not inherit the name.
+
+    :param fused: probabilities from :func:`fuse_semantics`.
+    :param shape: probabilities from :func:`classify` with ``min_prob=0``.
+    :returns: the fitting bottle prior, or ``fused`` when ``bottle`` is not the winner or no
+        bottle prior fits better than :data:`UNKNOWN`.
+    """
+    if not fused or max(fused, key=fused.get) != "bottle":
+        return fused
+    members = {name: shape.get(name, 0.0) for name in _BOTTLE_FAMILY}
+    if not members or max(members.values()) <= shape.get(UNKNOWN, 0.0):
+        return fused
+    winner = max(members, key=members.get)
+    return {winner: 1.0}
+
+
+def fuse_respecting_color(semantic: dict[str, float], shape: dict[str, float], color: np.ndarray,
+                          invalid_frac: float, weight: float, floor: float) -> dict[str, float]:
+    """Fused probabilities after a failed colour test drops that segmenter score.
+
+    The score returns to the floor and fusion runs again, until the winner has no colour
+    test or the test passes. Each name is dropped at most once. A name with no colour test,
+    such as cup, is unchanged: colour does not invent a test it does not have.
+
+    :param semantic: category → score for the names the segmenter gave the region.
+    :param shape: probabilities from :func:`classify` with ``min_prob=0``.
+    :param color: mean RGB in 0..1.
+    :param invalid_frac: fraction of the region whose depth was missing.
+    :param weight: exponent of the shape probability.
+    :param floor: score used for a name the segmenter did not give.
+    :returns: category → probability.
+    """
+    remaining = dict(semantic)
+    banned: set[str] = set()
+    fused = fuse_semantics(remaining, shape, weight, floor)
+    while fused:
+        top = max(fused, key=fused.get)
+        rule = SHAPES.get(top, {}).get("color")
+        if rule is None or _color_score(rule, color, invalid_frac) >= 0 or top in banned:
+            return fused
+        banned.add(top)
+        remaining.pop(top, None)
+        # A prior that was never in the segmenter list still wins the next pass unless it is
+        # removed. Dropping it from ``remaining`` alone leaves it in the shape probabilities.
+        shaped = {k: v for k, v in shape.items() if k not in banned}
+        fused = fuse_semantics(remaining, shaped, weight, floor)
+    return fused
+
+
 def fuse_semantics(semantic: dict[str, float], shape: dict[str, float], weight: float, floor: float,
                    unknown: str = UNKNOWN) -> dict[str, float]:
     """Category probabilities from SAM scores and shape-prior probabilities:
@@ -146,3 +292,70 @@ def fuse_semantics(semantic: dict[str, float], shape: dict[str, float], weight: 
 def prototype(category: str) -> tuple[float, float, float] | None:
     shape = SHAPES.get(category)
     return shape["dims"] if shape and "scale" not in shape else None
+
+
+def max_plan_aspect(categories: tuple[str, ...]) -> float:
+    """The greatest long-side / short-side ratio among those shape priors.
+
+    A measured box longer than every one of these priors, on a region the segmenter called a
+    bottle, is a strip of the support rather than one of those bottles. The ratio is the
+    priors' own, so it does not follow the longest smear seen in one room.
+
+    :param categories: keys of :data:`SHAPES`.
+    :returns: a ratio, or 1 when none of the categories has a prior.
+    """
+    ratios = []
+    for name in categories:
+        shape = SHAPES.get(name)
+        if not shape:
+            continue
+        long, short, _height = shape["dims"]
+        ratios.append(float(long) / float(short))
+    return max(ratios) if ratios else 1.0
+
+
+def partial_pistol(size: np.ndarray, category: str, color: np.ndarray | None,
+                   invalid_frac: float) -> str | None:
+    """A pistol, when a dark speck is too small to be a bowl and as flat as the pistol prior.
+
+    A black surface returns depth on only part of itself, so the long side is a lower bound.
+    The bowl prior's smallest scale is still larger than this speck, and the height matches
+    the pistol prior. A full-length pistol is left to the ordinary prior.
+
+    :param size: full extents of the measured box, metres.
+    :param category: the name the fused probabilities currently give the track.
+    :param color: mean RGB in 0..1, or None when the view had no colour.
+    :param invalid_frac: fraction of the region whose depth was missing.
+    :returns: ``pistol``, or None to keep ``category``.
+    """
+    if color is None or category not in ("bowl", "unknown"):
+        return None
+    if _color_score("dark", color, invalid_frac) < 0:
+        return None
+    long = float(max(size[0], size[1]))
+    height = float(size[2])
+    bowl = SHAPES["bowl"]
+    min_long = float(bowl["dims"][0]) * float(bowl["scale"][0])
+    pistol_h = float(SHAPES["pistol"]["dims"][2])
+    if long >= min_long:
+        return None
+    if not (pistol_h * math.exp(-UNDER[2]) <= height <= pistol_h * math.exp(OVER)):
+        return None
+    return "pistol"
+
+
+def max_long_extent(category: str) -> float | None:
+    """The longest side a box of ``category`` can have and still be that category.
+
+    The prior's long side times its largest scale times :data:`OVER`. Past this, the
+    measurement is a different object. The bound is the prior, so it does not grow when
+    one room contains a larger false bowl.
+
+    :param category: a key of :data:`SHAPES`.
+    :returns: metres, or None when ``category`` has no shape prior.
+    """
+    shape = SHAPES.get(category)
+    if not shape:
+        return None
+    hi = float(shape.get("scale", (1.0, 1.0))[1])
+    return float(shape["dims"][0]) * hi * math.exp(OVER)

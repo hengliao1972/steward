@@ -120,6 +120,43 @@ test('ego_predict passes a placing heading, a flip and a clearance; pour is a sk
   ])
 })
 
+test('ego_observe stores each camera PNG and renders it beside the summary', async () => {
+  const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==', 'base64')
+  const ego = fakeEgo()
+  ego.observe = async () => ({
+    t: 1.25,
+    visible: [{ category: 'cup', rangeM: 0.4, camera: 'head_camera' }],
+    images: { head_camera: png.toString('base64') },
+    imagePaths: { head_camera: 'C:/secret/observe.png' },
+  })
+  const saved = []
+  const store = {
+    saveImage: async ({ data, mediaType, name }) => {
+      saved.push({ bytes: data.byteLength, mediaType, name })
+      return {
+        attachmentId: `sha256:${'ab'.repeat(32)}`, mediaType, bytes: data.byteLength, width: 1, height: 1, name,
+      }
+    },
+  }
+  const observe = tool(egoTools(ego, store), 'ego_observe')
+  const value = await observe.execute({}, exec('ego_observe'))
+  assert.equal(saved.length, 1)
+  assert.equal(saved[0].name, 'head_camera.png')
+  assert.equal(saved[0].mediaType, 'image/png')
+  assert.equal(value.imagePaths, undefined)
+  assert.equal(value.images[0].camera, 'head_camera')
+  const blocks = observe.output.render({}, value)
+  assert.equal(blocks[0].type, 'text')
+  assert.match(blocks[0].text, /cup/)
+  assert.doesNotMatch(blocks[0].text, /iVBORw|imagePaths|secret/)
+  assert.equal(blocks[1].type, 'image')
+  assert.equal(blocks[1].attachment.width, 1)
+  await assert.rejects(
+    tool(egoTools(ego), 'ego_observe').execute({}, exec('ego_observe')),
+    /attachment service/,
+  )
+})
+
 test('ego_inspect and ego_annotate reach the Ego service', async () => {
   const ego = fakeEgo()
   const tools = egoTools(ego)

@@ -13,10 +13,14 @@
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "^4.0.5",
+    "@deepseek-ai/dsh-attachment": "0.2.1-rc.3",
+    "@deepseek-ai/dsh-llm": "0.2.1-rc.3",
     "@deepseek-ai/dsh-tools": "0.2.1-rc.3"
   },
   "devDependencies": {
     "@deepseek-ai/cordis": "4.0.5",
+    "@deepseek-ai/dsh-attachment": "0.2.1-rc.3",
+    "@deepseek-ai/dsh-llm": "0.2.1-rc.3",
     "@deepseek-ai/dsh-tools": "0.2.1-rc.3"
   }
 }

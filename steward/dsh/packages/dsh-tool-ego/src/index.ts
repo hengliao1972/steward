@@ -8,6 +8,9 @@
  */
 
 import type { Context } from '@deepseek-ai/cordis'
+import { AttachmentId } from '@deepseek-ai/dsh-attachment'
+import type { ImageAttachmentRef } from '@deepseek-ai/dsh-attachment'
+import type { ContentBlock } from '@deepseek-ai/dsh-llm'
 import { defineTool, type InferValue, type ToolDefinition } from '@deepseek-ai/dsh-tools'
 import { recordingId } from '@steward/dsh-ego'
 import type { EgoService, JsonObject, PredictionReceipt, SkillJob } from '@steward/dsh-ego'
@@ -25,6 +28,60 @@ function json(value: unknown): Json {
 
 function text(value: unknown): [{ type: 'text'; text: string }] {
   return [{ type: 'text', text: JSON.stringify(value, null, 1) }]
+}
+
+/** The part of `ctx.attachments` `ego_observe` uses to commit one camera PNG. */
+export interface CameraImageStore {
+  /**
+   * Validate and store one PNG.
+   * @param input - encoded bytes, media type and display name.
+   * @returns the durable image reference the tool result cites.
+   */
+  saveImage(input: { data: Uint8Array; mediaType: 'image/png'; name?: string }): Promise<ImageAttachmentRef>
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+}
+
+/** Camera name to base64 PNG, as `observe` returns it. */
+function cameraPngs(payload: JsonObject): Record<string, string> {
+  const images = payload.images
+  if (images === undefined) return {}
+  if (!isRecord(images)) throw new Error('ego_observe images must be an object of camera name to base64 PNG')
+  const out: Record<string, string> = {}
+  for (const [camera, value] of Object.entries(images)) {
+    if (typeof value !== 'string' || value.length === 0) {
+      throw new Error(`ego_observe image for ${camera} is not a base64 PNG`)
+    }
+    out[camera] = value
+  }
+  return out
+}
+
+/** Text summary of what is visible, plus one image block per stored camera frame. */
+function observeBlocks(value: unknown): ContentBlock[] {
+  const record = isRecord(value) ? value : {}
+  const summary = { t: record.t, visible: record.visible }
+  const blocks: ContentBlock[] = [{ type: 'text', text: JSON.stringify(summary, null, 1) }]
+  const images = record.images
+  if (!Array.isArray(images)) return blocks
+  for (const image of images) {
+    if (!isRecord(image) || typeof image.attachmentId !== 'string') continue
+    const mediaType = image.mediaType === 'image/png' ? 'image/png' : undefined
+    if (mediaType === undefined || typeof image.bytes !== 'number' || typeof image.width !== 'number'
+      || typeof image.height !== 'number') continue
+    const ref: ImageAttachmentRef = {
+      attachmentId: AttachmentId(image.attachmentId),
+      mediaType,
+      bytes: image.bytes,
+      width: image.width,
+      height: image.height,
+      ...typeof image.camera === 'string' ? { name: `${image.camera}.png` } : {},
+    }
+    blocks.push({ type: 'image', attachment: ref })
+  }
+  return blocks
 }
 
 function receiptView(r: PredictionReceipt): JsonObject {
@@ -48,9 +105,11 @@ function jobView(job: SkillJob): JsonObject {
 /**
  * Build the robot tool definitions over an Ego service.
  * @param ego - the `ctx.ego` service.
+ * @param images - attachment store that commits the camera PNGs `ego_observe` returns. Without it,
+ *   an observation that carries images fails instead of putting the bytes into the text result.
  * @returns tool definitions in registration order.
  */
-export function egoTools(ego: EgoService): ToolDefinition[] {
+export function egoTools(ego: EgoService, images?: CameraImageStore): ToolDefinition[] {
   return [
     defineTool({
       name: 'ego_state',
@@ -83,12 +142,33 @@ export function egoTools(ego: EgoService): ToolDefinition[] {
     }),
     defineTool({
       name: 'ego_observe',
-      description: 'Report what your two cameras detect right now (categories, distances and which camera). Your world model also '
-        + 'updates continuously; use ego_state for the accumulated picture.',
+      description: 'Report what your cameras see right now: a short list of visible objects (category, distance and '
+        + 'which camera) and the camera images themselves. Your world model also updates continuously; use ego_state '
+        + 'for the accumulated picture.',
       parameters: {},
-      output: { schema: JSON_OUTPUT, render: (_a, v) => text(v) },
+      output: { schema: JSON_OUTPUT, render: (_a, v) => observeBlocks(v) },
       async execute(_args, exec) {
-        return json(await ego.observe(exec.signal))
+        const seen = await ego.observe(exec.signal)
+        const pngs = cameraPngs(seen)
+        const stored = []
+        const cameras = Object.keys(pngs)
+        if (cameras.length > 0) {
+          if (images === undefined) {
+            throw new Error('ego_observe received camera images but no attachment service is mounted')
+          }
+          for (const camera of cameras) {
+            const data = Uint8Array.from(Buffer.from(pngs[camera], 'base64'))
+            if (data.length < 8 || data[0] !== 0x89) {
+              throw new Error(`ego_observe image for ${camera} is not a PNG`)
+            }
+            const ref = await images.saveImage({ data, mediaType: 'image/png', name: `${camera}.png` })
+            stored.push({
+              camera, attachmentId: ref.attachmentId, mediaType: ref.mediaType,
+              bytes: ref.bytes, width: ref.width, height: ref.height,
+            })
+          }
+        }
+        return json({ t: seen.t, visible: seen.visible ?? [], images: stored })
       },
     }),
     defineTool({
@@ -340,5 +420,13 @@ export function egoTools(ego: EgoService): ToolDefinition[] {
 }
 
 export function apply(ctx: Context): void {
-  for (const tool of egoTools(ctx.ego)) ctx.tools.register(tool)
+  ctx.inject(['attachments'], (scoped) => {
+    const store: CameraImageStore = {
+      saveImage: (input) => scoped.attachments.saveImage(input),
+    }
+    const stop = egoTools(ctx.ego, store).map(tool => ctx.tools.register(tool))
+    return () => {
+      for (const dispose of stop) dispose()
+    }
+  })
 }

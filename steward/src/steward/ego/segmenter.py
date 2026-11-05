@@ -64,14 +64,19 @@ class SegmenterConfig:
     vocabulary: dict[str, str] = field(default_factory=dict)
     """Prompt text → Ego-State category."""
     geometric_fill: bool = False
-    """Add depth clusters SAM left unlabelled as unnamed instances (:meth:`Segmenter.fill`)."""
+    """Add depth clusters SAM left unlabelled as unnamed instances (:meth:`Segmenter.fill`).
+    The shipped ``segmentation.toml`` turns this on; a constructed config leaves it off."""
     fill_free_share: float = 0.7
     """Share of a depth cluster's pixels SAM must have left unlabelled for it to be added."""
+    fill_supports_only: bool = True
+    """When the fill is on, add only clusters standing on a support. Residual walls and furniture
+    stay out: depth clustering otherwise boxes a corner into a piece of furniture."""
 
     def key(self) -> str:
         """Digest of every setting that changes a SAM result, part of each cache key; the fill
         settings are left out because the fill is computed after the cached result."""
-        sam = {k: v for k, v in asdict(self).items() if k not in ("geometric_fill", "fill_free_share")}
+        sam = {k: v for k, v in asdict(self).items()
+               if k not in ("geometric_fill", "fill_free_share", "fill_supports_only")}
         return hashlib.sha256(json.dumps(sam, sort_keys=True).encode()).hexdigest()[:16]
 
 
@@ -300,7 +305,8 @@ class Segmenter:
         cfg = self.config
         if not cfg.geometric_fill:
             return seg
-        geo = masks_from_depth(depth, fovy_deg, GeometricMaskConfig(min_pixels=cfg.min_pixels), up_cam=up_cam)
+        geo = masks_from_depth(depth, fovy_deg, GeometricMaskConfig(min_pixels=cfg.min_pixels), up_cam=up_cam,
+                               supports_only=cfg.fill_supports_only)
         mask, labels = seg.mask.copy(), dict(seg.labels)
         free = mask == 0
         next_id = int(mask.max()) + 1
