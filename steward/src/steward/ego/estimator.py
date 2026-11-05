@@ -195,6 +195,7 @@ class EgoEstimator:
         self.version = 0
         self.stamp = 0.0
         self.held_since = 0.0  # body time the current load was grasped at
+        self.posed = False
         self.odometry = {"x": 0.0, "y": 0.0, "yaw": 0.0, "sigma": {"pos": 0.01, "yaw": 0.01}}
         self.joints: dict[str, float] = {}
         self.gripper = {"state": "open", "holding": False}
@@ -368,6 +369,7 @@ class EgoEstimator:
     # ----------------------------------------------------------------- update
     def update(self, frame: dict) -> None:
         self.stamp = float(frame["stamp"])
+        self.posed = True
         self.odometry = frame["odometry"]
         self.joints = frame["joints"]
         self._read_grippers(frame)
@@ -412,6 +414,7 @@ class EgoEstimator:
         """Follow the robot's own state (stamp, odometry, joints, gripper) from a sensor header
         without imaging: between two segmented frames, what the gripper holds moves with it."""
         self.stamp = float(header["stamp"])
+        self.posed = True
         self.odometry = header["odometry"]
         self.joints = header["joints"]
         self.gripper = header["gripper"]
@@ -443,6 +446,7 @@ class EgoEstimator:
         """
         header = frame["header"]
         self.stamp = float(header["stamp"])
+        self.posed = True
         self.odometry = header["odometry"]
         self.joints = header["joints"]
         self._read_grippers(header)

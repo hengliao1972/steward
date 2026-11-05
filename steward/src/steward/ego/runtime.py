@@ -26,6 +26,7 @@ from PIL import Image
 from steward.ego.perception import (box_of, decode_rgbd, match_face, resample_face, segments, top_face, top_face_array,
                                     world_up_face)
 from steward.ego.kinematics import gripper_pose
+from steward.ego.providers.geometric_masks import _backproject
 from steward.ego.esim import Esim, EsimConfig
 from steward.ego.estimator import SELF_ID, EgoEstimator
 from steward.ego.roles import RoleConfig, assign_roles
@@ -490,7 +491,7 @@ class EgoRuntime:
                 with self._lock:
                     cam = self.estimator.camera_pose(header["odometry"], rgbd["camera"])
                 up_cam = matrix_from_quat(cam["q"]).T @ np.array([0.0, 0.0, 1.0])
-                result = self.segmenter.fill(result, rgbd["depth"], rgbd["fovy"], up_cam)
+                result = self.segmenter.fill(result, self._depth_without_body(rgbd), rgbd["fovy"], up_cam)
             except SegmenterError as exc:
                 error = str(exc)
             else:
@@ -506,6 +507,32 @@ class EgoRuntime:
             self.alert(f"图像分割失败，本帧只更新机器人自身状态：{error}", "runtime")
         stats["lastError"] = error
         return False
+
+    def _depth_without_body(self, rgbd: dict) -> np.ndarray:
+        """``rgbd`` depth with pixels on the robot's own links set to 0.
+
+        Depth clustering, unlike a world mask, does not know the body. The copy is only for the
+        geometric fill; the frame's depth still measures the scene."""
+        depth = np.array(rgbd["depth"], dtype=np.float32, copy=True)
+        header = rgbd["header"]
+        est = self.estimator
+        saved = (est.odometry, est.joints, est.gripper)
+        est.odometry = header["odometry"]
+        est.joints = header["joints"]
+        est.gripper = header["gripper"]
+        try:
+            valid = np.isfinite(depth) & (depth > 0.05)
+            if not valid.any():
+                return depth
+            pts, ys, xs = _backproject(depth, float(rgbd["fovy"]), valid)
+            cam = est.camera_pose(header["odometry"], rgbd.get("camera"))
+            rot = matrix_from_quat(cam["q"])
+            world = pts @ rot.T + np.asarray(cam["p"], float)
+            inside = est.on_body(world)
+        finally:
+            est.odometry, est.joints, est.gripper = saved
+        depth[ys[inside], xs[inside]] = 0.0
+        return depth
 
     @contextlib.contextmanager
     def _holding(self, hold: str):
@@ -656,7 +683,8 @@ class EgoRuntime:
             est = self.estimator
             entities = {t.id: {"p": t.pos.tolist()} for t in est.tracks.values()}
             state = {"stamp": est.stamp, "odometry": dict(est.odometry), "joints": dict(est.joints),
-                     "gripper": dict(est.gripper), "entities": entities, "toolOffset": self.esim.tool_offset}
+                     "gripper": dict(est.gripper), "entities": entities, "toolOffset": self.esim.tool_offset,
+                     "posed": est.posed}
         try:
             live = self.link.sensors()
         except Exception:  # noqa: BLE001 - the belief is still a usable answer when the body cannot be reached
