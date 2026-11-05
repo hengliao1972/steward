@@ -448,7 +448,12 @@ class SkillExecutor:
 
     # ---------------------------------------------------------------- skills
     def _look_around(self, job: Job) -> None:
-        yaw0 = self._state()["odometry"]["yaw"]
+        st = self._state()
+        # Odometry stays at the origin until the first body frame. A look that commands that point
+        # drives the base there. A state without the flag (a test double) is already a pose.
+        while st.get("posed") is False:
+            st = self._tick()
+        yaw0 = st["odometry"]["yaw"]
         for k in range(1, 5):
             self._turn_to(wrap_angle(yaw0 + k * math.pi / 2))
             self._wait(self.config.look_dwell_s)

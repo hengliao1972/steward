@@ -656,7 +656,8 @@ class EgoRuntime:
             est = self.estimator
             entities = {t.id: {"p": t.pos.tolist()} for t in est.tracks.values()}
             state = {"stamp": est.stamp, "odometry": dict(est.odometry), "joints": dict(est.joints),
-                     "gripper": dict(est.gripper), "entities": entities, "toolOffset": self.esim.tool_offset}
+                     "gripper": dict(est.gripper), "entities": entities, "toolOffset": self.esim.tool_offset,
+                     "posed": est.posed}
         try:
             live = self.link.sensors()
         except Exception:  # noqa: BLE001 - the belief is still a usable answer when the body cannot be reached
