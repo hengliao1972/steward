@@ -26,11 +26,10 @@ crop_prompts = ["bowl", "cup", "mug", "plate", "wine glass", "teddy bear", "scis
 # where L is the mean SAM score of category c (or `label_floor` for categories SAM did not name).
 shape_weight = 0.5
 label_floor = 0.03
-# Depth clusters (steward.ego.providers.geometric_masks) of which at least this share SAM left
-# unlabelled become unnamed instances, classified by the shape priors alone. Off: the wide camera
-# also sees the robot's own arm and mast, which depth clustering, unlike world masks, does not
-# leave out (steward.md 13.7.7).
-geometric_fill = false
+# Depth clusters above a support, of which at least this share SAM left unlabelled, become unnamed
+# instances and are classified by the shape priors alone. The runtime clears the robot's own links
+# from that depth first, and clusters that are not standing on a support are not added.
+geometric_fill = true
 fill_free_share = 0.7
 
 # Prompt text → Ego-State category. Categories outside the shape priors are allowed: such an object

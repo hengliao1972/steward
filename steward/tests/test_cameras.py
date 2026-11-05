@@ -215,3 +215,14 @@ def test_at_the_table_edge_the_wide_camera_reads_the_face_the_head_camera_cannot
     finally:
         runtime.stop()
         host.stop()
+
+
+def test_depth_on_the_robot_body_is_left_out_of_the_fill():
+    runtime = _offline()
+    intr = runtime.estimator.camera_intrinsics("wide_camera")
+    depth = np.full((intr["height"], intr["width"]), 0.45, np.float32)
+    cleaned = runtime._depth_without_body(
+        {"depth": depth, "fovy": intr["fovy"], "camera": "wide_camera", "header": _header()})
+    assert (cleaned == 0).any(), "the wide camera sees the mast and the arm"
+    assert (cleaned == 0.45).any()
+    assert runtime.estimator.odometry["x"] == 0.0 and runtime.estimator.joints == {}
