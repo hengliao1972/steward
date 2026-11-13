@@ -1295,7 +1295,10 @@ class WorldSim:
                 value = aff.value
                 if isinstance(value, dict) and "screw-hole" in value:
                     hole = value["screw-hole"]
-                    out.append({"id": str(hole["id"]), "p": [round(float(v), 4) for v in hole["p"][:3]]})
+                    item = {"id": str(hole["id"]), "p": [round(float(v), 4) for v in hole["p"][:3]]}
+                    if hole.get("n") is not None:
+                        item["n"] = [round(float(v), 4) for v in hole["n"][:3]]
+                    out.append(item)
         return out
 
     def _visible(self, obb, cam_inv: dict, cam_p: np.ndarray, half_h: float, half_v: float,

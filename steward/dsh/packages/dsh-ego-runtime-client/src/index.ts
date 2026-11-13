@@ -126,6 +126,10 @@ export class EgoRuntimeClient extends EgoService {
     return this.call('POST', '/ego/inspect', { entity, px }, signal)
   }
 
+  screwHoles(entity: string, signal?: AbortSignal): Promise<JsonObject> {
+    return this.call('POST', '/ego/screw-holes', { entity }, signal)
+  }
+
   matchFace(entities: string[], reference: string, px: number, signal?: AbortSignal): Promise<FaceMatchResult> {
     return this.call('POST', '/ego/match-face', { entities, reference, px }, signal)
   }

@@ -145,6 +145,7 @@ def _routes(runtime: EgoRuntime) -> dict:
         ("POST", "/ego/candidates"): lambda q, b: runtime.candidates(b),
         ("POST", "/ego/reflect"): lambda q, b: runtime.reflect(b),
         ("POST", "/ego/inspect"): lambda q, b: runtime.inspect(b["entity"], int(b.get("px", 24))),
+        ("POST", "/ego/screw-holes"): lambda q, b: runtime.screw_holes(b["entity"]),
         ("POST", "/ego/match-face"): lambda q, b: runtime.match_face(b.get("entities"), b["reference"], int(b.get("px", 24))),
         ("GET", "/ego/receipt"): lambda q, b: runtime.receipt(q["id"]),
         ("POST", "/skill/run"): lambda q, b: runtime.run(b["receipt"], b.get("owner")),

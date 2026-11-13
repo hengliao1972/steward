@@ -21,10 +21,12 @@ CATEGORY_ZH = {"table": "餐桌", "counter": "操作台", "cabinet": "柜子", "
                "scissors": "剪刀", "chair": "椅子", "wall": "墙", "unknown": "未知物体", "toy_airplane": "玩具飞机",
                "airplane_fuselage": "飞机身体", "airplane_wing": "飞机翅膀", "airplane_propeller": "螺旋桨",
                "airplane_landing_gear": "起落架", "car_body": "汽车身体", "car_wheel": "车轮",
-               "toy_screw": "螺丝", "electric_screwdriver": "电动螺丝刀", "manual": "说明书",
+               "toy_screw": "螺丝", "screw_board": "螺丝板", "electric_screwdriver": "电动螺丝刀",
+               "manual": "说明书",
                "picture": "参考图", "pistol": "手枪", "pill_bottle": "药瓶", "perfume_bottle": "香水瓶",
                "plant": "绿植"}
-SKILL_ZH = {"pick": "抓取", "place": "放置", "navigate": "导航", "open": "打开", "close": "关上"}
+SKILL_ZH = {"pick": "抓取", "place": "放置", "navigate": "导航", "open": "打开", "close": "关上",
+            "drive_screw": "拧螺丝", "insert_screw_into_hole": "插入螺丝", "pour": "倾倒"}
 
 
 def describe(obj: dict) -> str:
@@ -197,7 +199,8 @@ def _failed_target_findings(failures: list[dict], summary: dict | None) -> list[
         grouped.setdefault(target, []).append(f)
     out = []
     for target, items in grouped.items():
-        skill = re.match(r"(pick|place|navigate|open|close)\b", items[-1]["message"])
+        skill = re.match(r"(pick|place|navigate|open|close|drive_screw|insert_screw_into_hole|pour)\b",
+                         items[-1]["message"])
         action = SKILL_ZH[skill[1]] if skill else "处理"
         reasons = list(dict.fromkeys(explain(f["message"], summary) for f in items))
         what = names.get(target, target) if target != "—" else "（未指明对象）"

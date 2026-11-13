@@ -57,8 +57,9 @@ export function egoTools(ego: EgoService): ToolDefinition[] {
       description: 'Read your current understanding of the world: your own position, what you are holding, the skill '
         + 'in progress, and every object you have perceived with its estimated position, position uncertainty in '
         + 'metres, size, what it rests on, and when you last saw it. Objects you have not seen are absent, and '
-        + 'positions are estimates. screwHoles lists mating screw holes on a part (id and body-frame p in metres; '
-        + 'source observed when a camera saw them, else prior from the category); use them with place alignTo / hole. '
+        + 'positions are estimates. screwHoles lists mating screw holes on a part (id, body-frame p and outward n; '
+        + 'source observed when a camera saw them, else prior from the category). For world positions and whether '
+        + 'holes face up, call ego_screw_holes after placing a part; use place alignTo / hole to seat them. '
         + 'appearance says what you remember of an object\'s top face: how long ago you '
         + 'saw it, the share seen, plain / interiorColors (plain true or interiorColors under about 20: a cardboard '
         + 'back; do not use spread alone — lighting makes a plain back look varied) and stale (put down since, look '
@@ -182,7 +183,15 @@ export function egoTools(ego: EgoService): ToolDefinition[] {
         + 'have screw holes, place seats those holes (on the mate itself, or on a surface with alignTo naming the mate; '
         + 'optional hole picks which mate hole / family, e.g. "wing" or "wheel_0"; alignHoles: false keeps a manual '
         + 'offset); optional roll in radians tips it about the arm before release, e.g. π/2 = 90° '
-        + 'to set a flat object down on its side; not together with flip), "pour" (the held object must be pourable; needs on: a surface; tips it over the '
+        + 'to set a flat object down on its side; parts with side screw holes (car body) are auto-tipped with ±π/2 when '
+        + 'roll is omitted so a mount faces up, and picking a car wheel is refused until some car body has holesFaceUp '
+        + '(ego_screw_holes); not together with flip), "insert_screw_into_hole" (needs a held toy_screw and on: the part '
+        + 'with screw holes; optional hole / maxAttempts; places the screw tip-down into the hole, senses that it stands '
+        + 'head-up in the hole, and re-picks / retries if it falls or misses), "drive_screw" (needs target: a toy_screw '
+        + 'already seated tip-down in a hole with head up; tipSource must be observed — call ego_observe / ego_screw_holes '
+        + 'first; the held object must be the electric screwdriver, picked from the side so the shaft crosses the gripper '
+        + '(end-on grasps leave the bit on the wrist-roll axis and are refused); rolls the bit down, presses onto '
+        + 'the screw head, holds so it tightens, and keeps the screwdriver in the gripper), "pour" (the held object must be pourable; needs on: a surface; tips it over the '
         + 'spot so its contents slide out there in a heap, then holds it upright again, still in the gripper; the spot '
         + 'keeps the contents\' slide from every edge so nothing falls off; count the contents before pouring, since '
         + 'flat ones can land wholly hidden under one another), "open" / '
@@ -199,28 +208,44 @@ export function egoTools(ego: EgoService): ToolDefinition[] {
         + '(pick it, place it at a parking spot), then predict the original skill again. A receipt can be run once '
         + 'and expires.',
       parameters: {
-        skill: { type: 'string', enum: ['navigate', 'pick', 'place', 'pour', 'open', 'close'], required: true, description: 'Skill to predict.' },
-        target: { type: 'string', description: 'pick: id of the object to grasp; open/close: id of the drawer.' },
-        on: { type: 'string', description: 'place: id of the surface, screw-hole part, open drawer or larger bowl to put the held object on or in; pour: id of the surface.' },
+        skill: { type: 'string', enum: ['navigate', 'pick', 'place', 'pour', 'open', 'close', 'drive_screw', 'insert_screw_into_hole'], required: true, description: 'Skill to predict.' },
+        target: { type: 'string', description: 'pick: id of the object to grasp; open/close: id of the drawer; drive_screw: id of the seated toy_screw to tighten.' },
+        on: { type: 'string', description: 'place / insert_screw_into_hole: id of the surface, screw-hole part, open drawer or larger bowl to put the held object on or in; pour: id of the surface.' },
         offset: { type: 'array', items: { type: 'number' }, description: 'place, pour: [dx, dy] of the spot from the surface centre in the surface frame, metres; without it the free spot nearest you. If something already lies at the requested spot, the free spot nearest it is used instead and the issues say where (the receipt plan.spot holds the spot used). Ignored when screw holes are aligned.' },
         alignTo: { type: 'string', description: 'place: id of the part whose screw holes the held part should seat on. Use when on is a table or other surface and the mate is another object on it; omit when on itself is the mate.' },
-        hole: { type: 'string', description: 'place: which screw hole (or family) on the mate to seat, e.g. "wing_0", "wing", "gear", "wheel_2". Without it, multi-hole parts pick the matching family; a single hub picks the nearest mount.' },
+        hole: { type: 'string', description: 'place / insert_screw_into_hole: which screw hole (or family) on the mate to seat, e.g. "wing_0", "wing", "gear", "wheel_2", "hole_0". Without it, multi-hole parts pick the matching family; a single hub picks the nearest mount.' },
         alignHoles: { type: 'boolean', description: 'place: seat screw holes when both parts have them (default true when on is the mate or alignTo is set). Set false to keep a manual offset.' },
+        maxAttempts: { type: 'number', description: 'insert_screw_into_hole: how many place+verify cycles to try if the screw falls or misses (default 3, max 8).' },
         at: { type: 'array', items: { type: 'number' }, description: 'place on the floor: [x, y] in metres.' },
         x: { type: 'number', description: 'navigate: goal x in metres.' },
         y: { type: 'number', description: 'navigate: goal y in metres.' },
         yaw: { type: 'number', description: 'navigate: goal heading; place: final heading of the object\'s frame (as ego_state yawDeg and ego_inspect report it), radians; the wrist turns it.' },
         flip: { type: 'boolean', description: 'place: turn the held object upside down before setting it down. pick: take it so that it can be turned over later; some arms take it tilted for that, and a place with flip says when the object must be picked again with flip.' },
-        roll: { type: 'number', description: 'place: tip the held object about the arm before setting it down, radians (π/2 = 90° onto its side). Not together with flip.' },
+        roll: { type: 'number', description: 'place: tip the held object about the arm before setting it down, radians (π/2 = 90° onto its side). Not together with flip. drive_screw: optional stand angle (default ±π/2, bit down).' },
         clearance: { type: 'number', description: 'place, pour: least gap in metres kept to objects already on the surface (default 0.015). With an offset, 0 allows contact or overlap (interlocking pieces, stacking): the spot is used exactly as requested, never shifted aside. Screw-hole alignment always uses 0.' },
       },
       output: { schema: JSON_OUTPUT, render: (_a, v) => text(v) },
       async execute(args, exec) {
         const params: JsonObject = {}
-        for (const key of ['target', 'on', 'offset', 'alignTo', 'hole', 'alignHoles', 'at', 'x', 'y', 'yaw', 'flip', 'roll', 'clearance'] as const) {
+        for (const key of ['target', 'on', 'offset', 'alignTo', 'hole', 'alignHoles', 'maxAttempts', 'at', 'x', 'y', 'yaw', 'flip', 'roll', 'clearance'] as const) {
           if (args[key] !== undefined) params[key] = args[key]
         }
         return json(receiptView(await ego.predict(args.skill, params, exec.signal)))
+      },
+    }),
+    defineTool({
+      name: 'ego_screw_holes',
+      description: 'Locate the screw holes on a part in the world frame and report whether each faces up. Pulls a fresh '
+        + 'camera frame first. Returns tipSource (only "observed" is trustworthy — never trust a place wristRoll '
+        + 'alone), tipRollDeg, each hole\'s bodyP/worldP/worldN/upDot/facing, and holesFaceUp. holesFaceUp is true '
+        + 'only when tipSource is observed and a mount faces up. If false or tipSource is unknown, tip with place '
+        + 'roll=±π/2, wait for the cameras, and call again before picking a wheel.',
+      parameters: {
+        entity: { type: 'string', required: true, description: 'Id of the part whose screw holes to locate.' },
+      },
+      output: { schema: JSON_OUTPUT, render: (_a, v) => text(v) },
+      async execute(args, exec) {
+        return json(await ego.screwHoles(args.entity, exec.signal))
       },
     }),
     defineTool({

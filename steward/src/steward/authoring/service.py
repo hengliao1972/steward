@@ -358,9 +358,12 @@ TOY_ASSEMBLY_TASK = (
     "参考图。组装规则：一次只装一个零件——先把该零件摆准螺丝孔，立刻用螺丝和电动螺丝刀拧紧固定，确认固定好"
     "后再装下一个零件；不要先把所有零件都摆上再统一拧螺丝。电动螺丝刀桌上是横放的，拧螺丝时必须先立起来"
     "（刀头朝下、机身竖直），对准孔自上而下拧，不要横着拿刀头去顶螺丝。装配汽车时，先把汽车身体侧面立起来"
-    "（该侧螺丝孔朝上）；放每个轮子前先看清该侧车身螺丝孔的位置，把轮子中央的孔精确对准车身孔摆放上去，"
-    "再把一颗螺丝插入孔中，用电动螺丝刀拧紧固定，确认后再装下一个轮子；一侧装完后翻到另一侧同样操作。"
-    "请先按汽车桌的说明书和成品图组装汽车玩具，再按飞机桌的说明书和成品图组装玩具飞机。"
+    "并摆稳；摆放车身后要用 ego_screw_holes 再次确认该侧螺丝孔朝上（facing=up）并精确读出孔的位置。"
+    "装每个轮子时：车轮中央是通孔，平放即可；用 insert_screw_into_hole 把一颗螺丝竖直朝下"
+    "（尖端向下、轴线竖直，勿横放）插入该轮子中央的螺丝孔，不必为朝向去翻转轮子；"
+    "再把带螺丝的轮子对准车身对应孔摆放上去，"
+    "用电动螺丝刀拧紧固定，确认后再装下一个轮子；一侧装完后翻到另一侧同样操作。请先按汽车桌的说明书"
+    "和成品图组装汽车玩具，再按飞机桌的说明书和成品图组装玩具飞机。"
 )
 
 # Square printed sheets (metres); MuJoCo cube-face textures must be square PNGs.
@@ -430,11 +433,12 @@ def car_manual_texture() -> str:
         "      再装下一个。",
         "螺丝刀：先立起（刀头朝下），",
         "        再自上而下拧，勿横拧。",
-        "装车：先把车身侧面立起，",
-        "      螺丝孔朝上。",
-        "放轮前：看清车身孔位置，",
-        "      轮孔精确对准摆上，",
-        "      插入一颗螺丝拧紧，",
+        "装车：先把车身侧面立起摆稳。",
+        "摆好后：用看孔确认朝上，",
+        "        并精确读出孔位置。",
+        "装轮：轮心是通孔，平放即可；",
+        "      螺丝竖直朝下插入，勿翻轮；",
+        "      再对准车身孔摆上拧紧，",
         "      再装下一个轮。",
         "1. 一侧立起：按上步骤逐个装。",
         "2. 翻到另一侧立起：同样。",
@@ -1020,6 +1024,90 @@ def build_cobot_errand(service: AuthoringService) -> dict:
     return {"assets": {k: v["version"][:12] for k, v in published.items()}, "scene": scene, "scenario": scenario}
 
 
+SCREW_BOARD_TASK = (
+    "桌子上放着一块木板，板上有四个朝上的螺丝孔；旁边有四根螺丝和一把电动螺丝刀。"
+    "请把每一根螺丝拧进板上的一个孔里。做法：一次只拧一颗——"
+    "先拿起一颗螺丝，用 ego_observe / ego_screw_holes 确认 tipSource=observed（分清尖头与帽），"
+    "再用 insert_screw_into_hole 尖端朝下、轴线竖直插入板上一个空螺丝孔"
+    "（on=木板、hole=hole_0…hole_3）；技能会在手里扶成尖头朝下再放下，松手后稍停再回撤，"
+    "并感知确认是否竖直入孔；倒了或未对准会重新拿起再放，直到成功。"
+    "若螺丝已侧躺，抓取时让螺杆横过夹爪（勿端对抓）；预测若报 gripper reach 无法扶正，先放下再直立抓。"
+    "不要横放螺丝，也不要用普通 place 代替插入。"
+    "再 ego_observe 确认该螺丝竖直入孔、螺丝帽朝上（tipSource=observed），然后 pick 电动螺丝刀"
+    "（刀平放、刀身尽量与靠近机器人的桌边平行，从刀身侧面抓，让刀身横过夹爪；不要端对抓刀头/尾，"
+    "也不要先 place roll 把刀立在桌上），直接 drive_screw（target=该螺丝）："
+    "技能腕滚转把刀头朝下按下拧紧；刀留在手里。若报 shaft along gripper reach，"
+    "把刀放下并改成刀身平行近边后再侧面 pick。"
+    "确认拧紧后再处理下一颗，直到四个孔都装好。不要先把四颗螺丝都摆上再统一拧。"
+)
+
+
+def screw_board_spec() -> dict:
+    """One table: a four-hole board, four screws, and an electric screwdriver."""
+    screws = [{"id": f"w:screw-{i}", "asset": "toy-screw", "on": "w:table",
+               "offset": [0.32, -0.12 + 0.08 * i]} for i in range(4)]
+    return {
+        "name": "screw-board",
+        "entities": [
+            {"id": "w:room", "asset": "kitchen-room", "at": {"x": 0.0, "y": 0.0}},
+            {"id": "w:table", "asset": "dining-table", "at": {"x": 0.0, "y": -0.7}},
+            {"id": "w:board", "asset": "screw-board", "on": "w:table", "offset": [-0.05, 0.05]},
+            {"id": "w:screwdriver", "asset": "electric-screwdriver", "on": "w:table",
+             "offset": [0.28, 0.22], "yaw": -0.5},
+            *screws,
+            {"id": "w:robot-1", "asset": "steward-bot", "at": {"x": 0.0, "y": -1.85, "yaw": math.pi / 2}},
+        ],
+        "regions": [{"id": "workshop", "label": "workshop", "polygon": [[-3, -2.5], [3, -2.5], [3, 2.5], [-3, 2.5]]}],
+    }
+
+
+def screw_board_goal() -> dict:
+    """Each screw seated on one of the board's four holes (tip-down, upright)."""
+    offsets = [[0.07, 0.05], [0.07, -0.05], [-0.07, 0.05], [-0.07, -0.05]]
+    return {
+        "kind": "relative-poses",
+        "upright": True,
+        "tolerance": {"positionM": 0.025, "yawDeg": 45.0},
+        "entities": ["w:board", "w:screw-0", "w:screw-1", "w:screw-2", "w:screw-3"],
+        "constraints": [
+            {"a": "w:board", "b": f"w:screw-{i}", "offset": list(offsets[i])}
+            for i in range(4)
+        ],
+    }
+
+
+SCREW_BOARD_ASSETS = {
+    "kitchen-room": ("building", {"width": 6.0, "depth": 5.0}),
+    "dining-table": ("dining_table", {}),
+    "steward-bot": ("steward_bot", {}),
+    "screw-board": ("screw_board", {}),
+    "toy-screw": ("toy_screw", {}),
+    "electric-screwdriver": ("electric_screwdriver", {}),
+}
+
+
+def build_screw_board(service: AuthoringService) -> dict:
+    """Publish the screw-board parts and save the ``screw-board`` scenario."""
+    published = {}
+    for name, (generator, params) in SCREW_BOARD_ASSETS.items():
+        created = service.create_asset(generator=generator, params=params)
+        if not created["validation"]["ok"]:
+            raise AuthoringError(f"generated asset {name} failed validation: {created['validation']['errors']}")
+        published[name] = service.publish_asset(name, created["template"],
+                                                meta={"generator": generator, "params": params})
+    scene = service.compose_scene(screw_board_spec())
+    scenario = service.save_scenario({
+        "name": "screw-board",
+        "scene": "screw-board",
+        "robots": ["w:robot-1"],
+        "task": SCREW_BOARD_TASK,
+        "goal": screw_board_goal(),
+        "phase": "phase0",
+        "view": {"lookat": [0.0, -0.7, 0.85], "distance": 2.8, "azimuth": 90.0, "elevation": -40.0},
+    })
+    return {"assets": {k: v["version"][:12] for k, v in published.items()}, "scene": scene, "scenario": scenario}
+
+
 # The scenarios the CLI and the console can build on demand, with what the catalog says about
 # them before they exist in a root. ``build`` may write several scenarios at once (the kitchen
 # builder saves all three Phase 0 scenarios), so the table names each one it produces.
@@ -1028,6 +1116,7 @@ BUILTIN_SCENARIOS: dict[str, dict] = {
     "phase0-shuttle": {"build": build_default_kitchen, "spec": shuttle_spec, "task": SHUTTLE_TASK},
     "phase0-chores": {"build": build_default_kitchen, "spec": chores_spec, "task": CHORES_TASK},
     "toy-assembly": {"build": build_toy_assembly, "spec": toy_assembly_spec, "task": TOY_ASSEMBLY_TASK},
+    "screw-board": {"build": build_screw_board, "spec": screw_board_spec, "task": SCREW_BOARD_TASK},
     "cobot-table": {"build": build_cobot_workstation, "spec": cobot_spec, "task": COBOT_TASK,
                     "mission": "bowl-on-plate"},
     "cobot-kitchen": {"build": build_cobot_kitchen, "spec": cobot_kitchen_spec, "task": COBOT_KITCHEN_TASK,

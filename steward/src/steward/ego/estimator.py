@@ -32,8 +32,9 @@ from steward.ego.perception import (
 )
 from steward.ego.planner import Box2D, front_box, protrusion, room_centre
 from steward.ego.priors import compatible, default_affordances, prior, screw_holes
-from steward.math3d import (matrix_from_quat, pose_compose, pose_inverse, quat_from_axis_angle, quat_from_yaw,
-                            quat_mul, quat_rotate, wrap_angle, yaw_from_quat)
+from steward.math3d import (matrix_from_quat, pose_compose, pose_inverse, quat_conj, quat_from_axis_angle,
+                            quat_from_matrix, quat_from_yaw, quat_mul, quat_rotate, tip_roll_from_quat,
+                            wrap_angle, yaw_from_quat)
 from steward.scene.schema import Entity, Est, Link, Relation, RigidTree, SceneState, primitive
 
 SELF_ID = "e:self"
@@ -120,8 +121,16 @@ class Track:
     annotated_affordances: list[str] | None = None  # affordances named with it, in place of the category prior
     # Screw holes last seen on this object (body frame), from detections; None until perception reports any.
     screw_holes: list[dict] | None = None
+    # Tip about body +x after yaw (0 upright, ±π/2 on a side). Only from detections — never from
+    # place wristRoll (arm roll is not body tip about +x). Pending needs two agreeing views to flip.
+    tip_roll: float = 0.0
+    tip_roll_source: str = "unknown"  # "observed" once a detection snapped tip; else "unknown"
+    tip_pending: float | None = None
+    tip_pending_n: int = 0
     held_yaw: float = 0.0  # while held: its heading relative to the gripper link's heading
     held_up: np.ndarray | None = None  # while held: the gripper-link axis that was vertical at the grasp
+    # While held: object orientation in the gripper frame (so wrist_roll tips tip_roll, not only yaw).
+    held_q: list[float] | None = None
     carried_offset: np.ndarray | None = None  # while inside the held container: its offset from that container, in the gripper's frame
     yaw_conflicts: int = 0  # views in a row at a clearly different heading from its settled one
     absent_views: list[tuple[float, float, float, float]] = field(default_factory=list)
@@ -536,25 +545,25 @@ class EgoEstimator:
             rng = float(det.get("range", np.linalg.norm(det["pose"]["p"])))
             rows = self.camera_intrinsics(det.get("camera", self.primary_camera))["height"]
             sigma = (self.config.pos_sigma_base + self.config.pos_sigma_per_m * rng) * self.config.pos_sigma_rows / rows
-            measurements.append((det, np.asarray(world["p"]), yaw_from_quat(world["q"]), sigma))
+            measurements.append((det, np.asarray(world["p"]), yaw_from_quat(world["q"]), sigma, world["q"]))
         # Global nearest-first assignment: of all detection-track pairs within the gate, the closest
         # pair is joined first, so of two objects side by side neither takes the other's track. An
         # object yields at most one detection per camera, so a track takes one from each camera.
         pairs = []
-        for k, (det, pos, _yaw, sigma) in enumerate(measurements):
+        for k, (det, pos, _yaw, sigma, _q) in enumerate(measurements):
             for track in self._candidates(det["category"], pos, sigma, float(max(det["size"][0], det["size"][1]))):
                 pairs.append((float(np.linalg.norm(track.pos - pos)), k, track.id))
-        camera_of = [det.get("camera", self.primary_camera) for det, _p, _y, _s in measurements]
+        camera_of = [det.get("camera", self.primary_camera) for det, _p, _y, _s, _q in measurements]
         seen_by: dict[str, set[str]] = {c: set() for c in cams}
         assigned: dict[int, str] = {}
         for _d, k, tid in sorted(pairs):
             if k not in assigned and tid not in seen_by[camera_of[k]]:
                 assigned[k] = tid
                 seen_by[camera_of[k]].add(tid)
-        boxes = [(pos, np.asarray(det["size"], float), yaw) for det, pos, yaw, _sigma in measurements]
-        for k, (det, pos, yaw, sigma) in sorted(enumerate(measurements), key=lambda item: item[1][3]):
+        boxes = [(pos, np.asarray(det["size"], float), yaw) for det, pos, yaw, _sigma, _q in measurements]
+        for k, (det, pos, yaw, sigma, quat) in sorted(enumerate(measurements), key=lambda item: item[1][3]):
             if k in assigned:
-                self._fuse(self.tracks[assigned[k]], det, pos, yaw, sigma)
+                self._fuse(self.tracks[assigned[k]], det, pos, yaw, sigma, quat=quat)
                 continue
             # Another camera's view of an object first seen in this very frame joins the track its
             # first view started.
@@ -562,7 +571,7 @@ class EgoEstimator:
                     if t.first_seen == self.stamp and t.id not in seen_by[camera_of[k]]]
             if born:
                 twin = min(born, key=lambda t: float(np.linalg.norm(t.pos - pos)))
-                self._fuse(twin, det, pos, yaw, sigma)
+                self._fuse(twin, det, pos, yaw, sigma, quat=quat)
                 seen_by[camera_of[k]].add(twin.id)
                 continue
             entry = self._newcomer(pos, np.asarray(det["size"], float), sigma, boxes[:k] + boxes[k + 1:])
@@ -575,10 +584,10 @@ class EgoEstimator:
                         if t.carried and t.id not in seen_by[camera_of[k]] and compatible(t.category, det["category"])]
                 if slid:
                     nearest = min(slid, key=lambda t: float(np.linalg.norm(t.pos - pos)))
-                    self._fuse(nearest, det, pos, yaw, sigma)
+                    self._fuse(nearest, det, pos, yaw, sigma, quat=quat)
                     seen_by[camera_of[k]].add(nearest.id)
                     continue
-            track = self._new_track(det, pos, yaw, sigma)
+            track = self._new_track(det, pos, yaw, sigma, quat=quat)
             if entry == "carried":
                 track.carried_offset = self.gripper_rotation(self.held_gripper).T @ (track.pos - self.tracks[self.held_id].pos)
             seen_by[camera_of[k]].add(track.id)
@@ -4123,7 +4132,8 @@ class EgoEstimator:
                 keep.last_seen = max(keep.last_seen, drop.last_seen)
                 self._drop(drop, "merged: duplicate", into=keep)
 
-    def _new_track(self, det: dict, pos: np.ndarray, yaw: float, sigma: float) -> Track:
+    def _new_track(self, det: dict, pos: np.ndarray, yaw: float, sigma: float,
+                   quat: list[float] | None = None) -> Track:
         track = Track(
             id=f"e:{next(self._ids)}",
             category_counts={det["category"]: 1.0},
@@ -4138,16 +4148,56 @@ class EgoEstimator:
             color_counts={det["color"]: 1.0} if det.get("color") else {},
         )
         self._remember_screw_holes(track, det)
+        if quat is not None:
+            self._adopt_tip_roll(track, quat)
         self.tracks[track.id] = track
         return track
 
     @staticmethod
+    def _snap_tip_roll(raw: float) -> float | None:
+        """Nearest upright / side / upside-down tip, or None when ``raw`` is ambiguous."""
+        candidates = (0.0, math.pi / 2, -math.pi / 2, math.pi, -math.pi)
+        snapped = min(candidates, key=lambda c: abs(wrap_angle(raw - c)))
+        if abs(wrap_angle(raw - snapped)) > 0.4:
+            return None
+        return 0.0 if abs(snapped) < 0.2 or abs(abs(snapped) - math.pi) < 0.2 else snapped
+
+    def _adopt_tip_roll(self, track: Track, quat: list[float]) -> None:
+        """Update ``track.tip_roll`` from a detection quat with snap + two-view hysteresis."""
+        snapped = self._snap_tip_roll(tip_roll_from_quat(quat))
+        if snapped is None:
+            return
+        if abs(wrap_angle(snapped - track.tip_roll)) < 0.25:
+            track.tip_roll = snapped
+            track.tip_roll_source = "observed"
+            track.tip_pending = None
+            track.tip_pending_n = 0
+            return
+        if track.tip_pending is not None and abs(wrap_angle(track.tip_pending - snapped)) < 0.25:
+            track.tip_pending_n += 1
+        else:
+            track.tip_pending, track.tip_pending_n = snapped, 1
+        if track.tip_pending_n >= 2:
+            track.tip_roll = snapped
+            track.tip_roll_source = "observed"
+            track.tip_pending = None
+            track.tip_pending_n = 0
+
+    @staticmethod
     def _remember_screw_holes(track: Track, det: dict) -> None:
-        """Keep the screw holes a detection reports on ``track`` (body-frame markers)."""
+        """Keep the screw holes a detection reports on ``track`` (body-frame markers and normals)."""
         holes = det.get("screwHoles")
         if not holes:
             return
-        track.screw_holes = [{"id": str(h["id"]), "p": [float(v) for v in h["p"][:3]]} for h in holes]
+        out = []
+        for h in holes:
+            item = {"id": str(h["id"]), "p": [float(v) for v in h["p"][:3]]}
+            if h.get("n") is not None:
+                item["n"] = [float(v) for v in h["n"][:3]]
+            if h.get("through"):
+                item["through"] = True
+            out.append(item)
+        track.screw_holes = out
 
     def _newcomer(self, pos: np.ndarray, size: np.ndarray, sigma: float, others: list[tuple[np.ndarray, np.ndarray, float]]) -> str:
         """How a detection no track explains enters the belief. ``"carried"``: it lies in the held
@@ -4207,11 +4257,16 @@ class EgoEstimator:
         up = (self.gripper_rotation(self.held_gripper) if rot is None else rot) @ track.held_up
         return math.acos(min(1.0, max(-1.0, float(up[2])))) > self.config.poured_roll
 
-    def _fuse(self, track: Track, det: dict, pos: np.ndarray, yaw: float, sigma: float) -> None:
+    def _fuse(self, track: Track, det: dict, pos: np.ndarray, yaw: float, sigma: float,
+              quat: list[float] | None = None) -> None:
         track.category_counts[det["category"]] = track.category_counts.get(det["category"], 0.0) + 1.0
         if det.get("color"):
             track.color_counts[det["color"]] = track.color_counts.get(det["color"], 0.0) + 1.0
         self._remember_screw_holes(track, det)
+        # While held, orientation follows the grasp (held_q + gripper); camera tip snaps would
+        # fight wrist_roll and leave ES tip ≠ WS (e.g. screwdriver stood bit-down).
+        if quat is not None and not track.held:
+            self._adopt_tip_roll(track, quat)
         track.observations += 1
         track.last_seen = self.stamp
         track.existence = min(1.0, track.existence + 0.2 * (1.0 - track.existence))
@@ -4375,6 +4430,9 @@ class EgoEstimator:
         track.var = np.maximum(track.var, self.config.grasp_shift_m**2)
         track.held_yaw = wrap_angle(track.yaw - math.atan2(rot[1, 0], rot[0, 0]))
         track.held_up = rot.T @ np.array([0.0, 0.0, 1.0])
+        # Freeze full orientation relative to the gripper so later wrist_roll updates tip_roll.
+        grip_q = quat_from_matrix(rot)
+        track.held_q = quat_mul(quat_conj(grip_q), self._track_quat(track))
         track.recent.clear()  # it will be put down elsewhere
         self.held_id = track_id
         return track_id
@@ -4405,6 +4463,7 @@ class EgoEstimator:
             track.appearance.stale = True  # it may have been put down turned over
         track.held = False
         track.held_offset = None
+        track.held_q = None
         track.voxels = None
         track.span = None
         track.settled = False  # it settles where it was put down; the next view places it
@@ -4468,13 +4527,36 @@ class EgoEstimator:
             track.pos = self.gripper_position(self.held_gripper) + self.gripper_rotation(self.held_gripper) @ track.held_offset
         self._unmark_held(track)
 
+    @staticmethod
+    def _track_quat(track: Track) -> list[float]:
+        """World quaternion implied by a track's yaw and (when observed) tip_roll."""
+        orient = quat_from_yaw(track.yaw)
+        if track.tip_roll_source == "observed" and abs(track.tip_roll) > 0.05:
+            orient = quat_mul(orient, quat_from_axis_angle([1.0, 0.0, 0.0], track.tip_roll))
+        return orient
+
+    def _held_world_quat(self, track: Track, rot: np.ndarray) -> list[float]:
+        """World orientation of a held track: gripper × ``held_q`` (falls back to yaw-only)."""
+        if track.held_q is not None:
+            return quat_mul(quat_from_matrix(rot), track.held_q)
+        return quat_from_yaw(wrap_angle(math.atan2(rot[1, 0], rot[0, 0]) + track.held_yaw))
+
+    def _apply_held_orient(self, track: Track, rot: np.ndarray) -> None:
+        """Write yaw and tip_roll from the held world quat (best-effort; full quat is in held_q)."""
+        obj_q = self._held_world_quat(track, rot)
+        track.yaw = yaw_from_quat(obj_q)
+        # When the long axis is near vertical, yaw/tip_roll is a poor split — keep tip for
+        # readers that only look at tip_roll, but ES pose must use the full quat via held_pose.
+        track.tip_roll = tip_roll_from_quat(obj_q)
+        track.tip_roll_source = "observed"
+
     def _follow_held(self) -> None:
         if not (self.held_id and self.held_id in self.tracks):
             return
         track = self.tracks[self.held_id]
         rot = self.gripper_rotation(self.held_gripper)
         track.pos = self.gripper_position(self.held_gripper) + rot @ track.held_offset
-        track.yaw = wrap_angle(math.atan2(rot[1, 0], rot[0, 0]) + track.held_yaw)
+        self._apply_held_orient(track, rot)
         poured = self._tipped(track)
         for content in [t for t in self.tracks.values() if t.carried]:
             if poured:
@@ -4679,9 +4761,14 @@ class EgoEstimator:
         return carried
 
     def held_pose(self, joints: dict | None = None, odometry: dict | None = None) -> dict[str, tuple]:
-        """``{track id: (position, yaw)}`` of the load and of what is carried in it, for the given
-        joint state and base pose (the formula of :meth:`_follow_held`; the tracks are not changed).
-        Empty when nothing is held or the load has no grasp offset."""
+        """``{track id: (position, orient_q)}`` of the load and of what is carried in it, for the
+        given joint state and base pose (the formula of :meth:`_follow_held`; tracks unchanged).
+
+        ``orient_q`` is the full world quaternion (gripper × ``held_q``) so wrist_roll stands a
+        screwdriver bit-down in ES — yaw+tip_roll alone cannot represent a vertical shaft. Empty
+        when nothing is held or the load has no grasp offset. Carried contents use
+        ``(position, None)``.
+        """
         if not self.held_id or self.held_id not in self.tracks:
             return {}
         track = self.tracks[self.held_id]
@@ -4689,7 +4776,7 @@ class EgoEstimator:
             return {}
         rot = self.gripper_rotation(self.held_gripper, joints, odometry)
         pos = self.gripper_position(self.held_gripper, joints, odometry) + rot @ track.held_offset
-        out = {track.id: (pos, wrap_angle(math.atan2(rot[1, 0], rot[0, 0]) + track.held_yaw))}
+        out = {track.id: (pos, self._held_world_quat(track, rot))}
         # Tipped or not by the same body: an upright belief with a live wrist rolled over has
         # poured, and its contents are no longer carried along (to_scene drops their relation).
         if not self._tipped(track, rot):
@@ -4814,7 +4901,8 @@ class EgoEstimator:
         self.version += 1
         return True
 
-    def release_at(self, track_id: str, spot: list[float], body: dict | None = None) -> bool:
+    def release_at(self, track_id: str, spot: list[float], body: dict | None = None,
+                   tip_roll: float | None = None) -> bool:
         """Record where a placed object was actually let go.
 
         While the gripper holds something the track follows the gripper, and the last frame the
@@ -4827,7 +4915,11 @@ class EgoEstimator:
         tenths of a metre above where the arm then lowered it. With ``body`` (the sensor header
         at the release) the height is the hand's there; without it, it stays the last estimate.
         Left at the carry height, the object put down on a table is believed floating above it,
-        and the next view of it there starts a second track."""
+        and the next view of it there starts a second track.
+
+        ``tip_roll`` records a place ``wristRoll`` so screw-hole facing stays correct before the
+        next detection refreshes tip from the measured orientation.
+        """
         track = self.tracks.get(track_id)
         if track is None:
             return False
@@ -4841,6 +4933,12 @@ class EgoEstimator:
         track.settled = False  # it drops the last few millimetres when the grip opens
         track.held = False
         track.held_offset = None
+        # Do not copy place wristRoll into tip_roll: arm roll is not body tip about +x. Tip stays
+        # unknown until detections snap it; pick/mate gates wait for tip_roll_source == "observed".
+        if tip_roll is not None:
+            track.tip_roll_source = "unknown"
+            track.tip_pending = None
+            track.tip_pending_n = 0
         if self.held_id == track_id:
             self.held_id = None
         self.version += 1
@@ -5221,8 +5319,10 @@ class EgoEstimator:
         for track in list(self.tracks.values()):
             if float(min(track.size)) <= 1e-4:
                 continue  # a flat degenerate box is not an object the observer can score
-            at, yaw = live.get(track.id, (None, None)) if live else (None, None)
-            entities.append(self._track_entity(track, at=at, yaw=yaw))
+            at = orient_q = None
+            if live and track.id in live:
+                at, orient_q = live[track.id]
+            entities.append(self._track_entity(track, at=at, orient_q=orient_q))
             # Carried in a load the live body has tipped: it has slid out, so it is not reported
             # as in the container (the next look perceives it where it landed).
             poured_live = bool(live) and track.carried and track.id not in live
@@ -5305,7 +5405,8 @@ class EgoEstimator:
         self._drop(track, f"forgotten by the agent: {reason}")
         self.version += 1
 
-    def _track_entity(self, track: Track, at=None, yaw: float | None = None) -> Entity:
+    def _track_entity(self, track: Track, at=None, yaw: float | None = None,
+                      orient_q: list[float] | None = None) -> Entity:
         p = prior(track.category)
         total = sum(track.category_counts.values())
         cat_unc = {"kind": "categorical", "p": {track.label: 1.0} if track.label else
@@ -5319,8 +5420,15 @@ class EgoEstimator:
             hole_src, holes = "observed", track.screw_holes
         else:
             hole_src, holes = "prior", screw_holes(track.category)
-        affordances.extend(Est(value={"screw-hole": {"id": hole["id"], "p": list(hole["p"])}}, src=hole_src)
-                           for hole in holes)
+        prior_holes = {h["id"]: h for h in screw_holes(track.category)}
+        for hole in holes:
+            marker = {"id": hole["id"], "p": list(hole["p"])}
+            if hole.get("n") is not None:
+                marker["n"] = list(hole["n"])
+            # Keep category through-hole flag even when a detection only reports id/p.
+            if hole.get("through") or prior_holes.get(hole["id"], {}).get("through"):
+                marker["through"] = True
+            affordances.append(Est(value={"screw-hole": marker}, src=hole_src))
         link = Link(
             id="body", name=track.category,
             geometry={"collision": [primitive("box", size)]},
@@ -5328,12 +5436,21 @@ class EgoEstimator:
             affordances=affordances,
         )
         root_value = max(p["root"], key=p["root"].get)
+        if orient_q is not None:
+            # Live held pose: full quaternion (yaw+tip cannot represent a vertical shaft).
+            orient = list(orient_q)
+        else:
+            heading = track.yaw if yaw is None else yaw
+            orient = quat_from_yaw(heading)
+            # Tip enters the pose only after detections snap it — never from a place wristRoll claim.
+            if track.tip_roll_source == "observed" and abs(track.tip_roll) > 0.05:
+                orient = quat_mul(orient, quat_from_axis_angle([1.0, 0.0, 0.0], track.tip_roll))
         return Entity(
             id=track.id,
             role=p["role"],
             category=Est(value=track.category, unc=cat_unc, t=track.last_seen, src=src),
             pose=Est(value={"p": (track.pos if at is None else np.asarray(at, dtype=float)).tolist(),
-                            "q": quat_from_yaw(track.yaw if yaw is None else yaw)},
+                            "q": orient},
                      unc=_gaussian6([*track.var.tolist(), 1e-4, 1e-4, track.yaw_var]), t=track.last_seen, src=src),
             body=RigidTree(root=Est(value=root_value, unc={"kind": "categorical", "p": p["root"]}, src="prior"),
                            links=[link]),
