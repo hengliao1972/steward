@@ -32,6 +32,7 @@ function fakeEgo(receipts = {}) {
     stop: async () => ({ stopped: null }),
     reportProblem: async (report) => { calls.push(['report', report]); return { id: 1, ...report } },
     inspect: async (entity, px) => { calls.push(['inspect', entity, px]); return { entity, px, rows: [], coverage: 0 } },
+    screwHoles: async (entity) => { calls.push(['screwHoles', entity]); return { entity, holesFaceUp: true, holes: [] } },
     matchFace: async (entities, reference, px) => { calls.push(['matchFace', entities, reference, px]); return { reference, results: [] } },
     annotate: async (a) => { calls.push(['annotate', a]); return { id: a.entity, category: a.label } },
     candidates: async (q) => { calls.push(['candidates', q]); return [] },
@@ -50,7 +51,7 @@ function tool(tools, name) {
 test('ego tools expose the robot vocabulary without World State concepts', () => {
   const names = egoTools(fakeEgo()).map(t => t.name)
   assert.deepEqual(names, ['ego_state', 'ego_query', 'ego_observe', 'ego_capture_cameras', 'ego_rgb_recording_start',
-    'ego_rgb_recording_status', 'ego_rgb_recording_stop', 'ego_camera_calibration', 'ego_gripper_pose', 'ego_explore', 'ego_predict', 'ego_inspect',
+    'ego_rgb_recording_status', 'ego_rgb_recording_stop', 'ego_camera_calibration', 'ego_gripper_pose', 'ego_explore', 'ego_predict', 'ego_screw_holes', 'ego_inspect',
     'ego_match_face', 'ego_annotate', 'ego_forget', 'ego_candidates', 'skill_run', 'skill_status', 'body_stop', 'report_problem'])
   for (const t of egoTools(fakeEgo())) assert.doesNotMatch(t.description, /ground truth|world state/i)
 })

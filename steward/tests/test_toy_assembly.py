@@ -37,7 +37,10 @@ def test_build_toy_assembly_publishes_a_settled_scene_with_both_kits(tmp_path):
     assert "一次只装一个零件" in scenario["task"]
     assert "刀头朝下" in scenario["task"] and "不要横着" in scenario["task"]
     assert "侧面立起" in scenario["task"] and "螺丝孔朝上" in scenario["task"]
-    assert "精确对准" in scenario["task"] and "插入" in scenario["task"]
+    assert "ego_screw_holes" in scenario["task"] and "facing=up" in scenario["task"]
+    assert "插入该轮子" in scenario["task"] and "带螺丝的轮子" in scenario["task"]
+    assert "竖直朝下" in scenario["task"] and "尖端向下" in scenario["task"]
+    assert "通孔" in scenario["task"]
     assert scenario["task"].index("组装汽车玩具") < scenario["task"].index("组装玩具飞机")
     assert "组装说明书" in scenario["task"] and "参考图" in scenario["task"]
     assert scenario["goal"] == toy_assembly_goal()

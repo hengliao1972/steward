@@ -113,6 +113,11 @@ class MotionConfig:
     up to a centimetre short, and the load is put down where the gripper is."""
     release_settle_s: float = 0.6
     """Most robot time a place waits for its joints to come within ``release_joint_tol``; then it lets go anyway."""
+    # insert_screw_into_hole: linger after open so the screw can drop into the hole, then rise
+    # tip-down before any retract — a 0.15 s wait + snap retract knocks it over.
+    insert_release_wait_s: float = 0.75
+    insert_clear_dz: float = 0.05
+    """Metres to raise the gripper (still tip-down) after insert release before drawing back."""
     handle_release_wait_s: float = 0.08
     look_dwell_s: float = 0.6
     inspect_closed_drawers: bool = False
@@ -182,7 +187,7 @@ class SkillExecutor:
                  config: MotionConfig | None = None, shift: Callable[[str, list[float]], None] | None = None,
                  on_error: Callable[[str], None] | None = None, on_finish: Callable[[Job], None] | None = None,
                  on_begin: Callable[[str, dict], None] | None = None,
-                 on_release: Callable[[str, list[float]], None] | None = None,
+                 on_release: Callable[..., None] | None = None,
                  clock: RobotLink | None = None,
                  closed_drawers: Callable[[], list[str]] | None = None,
                  drawer_plan: Callable[..., tuple[dict | None, str]] | None = None,
@@ -192,7 +197,10 @@ class SkillExecutor:
                  content_positions: Callable[[str], dict[str, list[float]]] | None = None,
                  resettle: Callable[[str, list[float], dict[str, list[float]]], list[str]] | None = None,
                  home_empty: Callable[[Callable[[], dict]], bool] | None = None,
-                 deploy_working: Callable[[Callable[[], dict]], None] | None = None):
+                 deploy_working: Callable[[Callable[[], dict]], None] | None = None,
+                 verify_screw_seat: Callable[[str], tuple[bool, str]] | None = None,
+                 replan_pick: Callable[[str], dict | None] | None = None,
+                 replan_insert_place: Callable[[dict], dict | None] | None = None):
         """``clock`` is the robot link whose world clock times the control ticks (one hold per job,
         ``skill/<job id>``); without it a tick sleeps ``tick_s`` of wall time.
 
@@ -207,7 +215,12 @@ class SkillExecutor:
         leaves arms as-is.
 
         ``deploy_working``, when provided, joint-space unfolds a resting arm through HOME before the
-        first planar dock (PARK/zero has no safe one-shot IK swing)."""
+        first planar dock (PARK/zero has no safe one-shot IK swing).
+
+        ``verify_screw_seat`` / ``replan_pick`` / ``replan_insert_place`` back
+        ``insert_screw_into_hole``: after each place, confirm the screw stands tip-down in a hole;
+        on miss, re-pick and re-plan the place.
+        """
         self._on_error = on_error
         self._clock = clock
         self._now = 0.0
@@ -217,6 +230,9 @@ class SkillExecutor:
         self._on_release = on_release
         self._home_empty = home_empty
         self._deploy_working = deploy_working
+        self._verify_screw_seat = verify_screw_seat
+        self._replan_pick = replan_pick
+        self._replan_insert_place = replan_insert_place
         self._command = command
         self._state = state
         self._mark_held = mark_held
@@ -338,6 +354,10 @@ class SkillExecutor:
                 self._close(job, plan)
             elif skill == "pour":
                 self._pour(job, plan)
+            elif skill == "drive_screw":
+                self._drive_screw(job, plan)
+            elif skill == "insert_screw_into_hole":
+                self._insert_screw_into_hole(job, plan)
             else:
                 raise SkillFailed(f"unknown skill {skill}")
             if self._home_empty is not None:
@@ -368,9 +388,9 @@ class SkillExecutor:
             if self._on_finish is not None:
                 self._on_finish(job)
 
-    def _released(self, object_id: str, spot: list[float]) -> None:
+    def _released(self, object_id: str, spot: list[float], tip_roll: float | None = None) -> None:
         if self._on_release is not None:
-            self._on_release(object_id, list(spot))
+            self._on_release(object_id, list(spot), tip_roll)
 
     def _release_clock(self, hold: str) -> None:
         try:
@@ -1442,16 +1462,47 @@ class SkillExecutor:
             raise SkillFailed(f"gripper is not over {plan['support']}; keeping {plan['object']}")
         self._settle_for_release()
         self._command({"gripper": "open"})
-        self._released(plan["object"], plan["spot"])
-        self._wait(self.config.release_wait_s)
-        # Flip-in-air: let the piece finish falling before any exit motion.
-        if "turnLift" in plan:
-            self._wait(max(0.5, self.config.release_wait_s))
+        tip = float(plan["wristRoll"]) if "wristRoll" in plan else None
+        self._released(plan["object"], plan["spot"], tip_roll=tip)
+        insert_release = bool(plan.get("insert") or plan.get("insertRelease"))
+        if insert_release:
+            self._wait(self.config.insert_release_wait_s)
+        else:
+            self._wait(self.config.release_wait_s)
+            # Flip-in-air: let the piece finish falling before any exit motion.
+            if "turnLift" in plan:
+                self._wait(max(0.5, self.config.release_wait_s))
         job.log.append(f"released {plan['object']} on {plan['support']}")
         # Once the object is released the place has succeeded: an exit that hits a USD hole (common
         # after flip-in-air with a residual wrist composition) must not fail the skill.
         try:
-            if "turnLift" in plan:
+            if insert_release:
+                # Tip-down insert: linger, rise clear while still rolled, then draw back — do not
+                # snap-retract or unroll beside the screw (that tips it out of the hole).
+                try:
+                    lift_now = float(self._state()["joints"].get("lift", plan["lift"]))
+                    self._set_joint("lift", lift_now + self.config.insert_clear_dz)
+                except (SkillFailed, OutOfReach):
+                    pass
+                self._wait(0.25)
+                reach_now = float(self._state()["joints"].get("reach", 0.0))
+                target_reach = max(self.config.retract_reach, reach_now - 0.18)
+                try:
+                    self._ramp_joint("reach", target_reach,
+                                    abs(reach_now - target_reach) / max(self.config.gentle_lift_speed, 0.05))
+                except (SkillFailed, OutOfReach):
+                    try:
+                        self._set_joint("reach", self.config.retract_reach, ramp=False)
+                    except (SkillFailed, OutOfReach):
+                        pass
+                if "wristRoll" in plan and abs(float(self._state()["joints"].get("wrist_roll", 0.0))) >= self.config.joint_tol:
+                    self._ramp_joint("wrist_roll", 0.0, self.config.wrist_turn_s)
+                self._exit_long_reach(plan)
+                self._set_joint("lift", self.config.stow_lift)
+                if "wristYaw" in plan:
+                    self._set_joint("wrist_yaw", 0.0)
+                self._backoff(plan)
+            elif "turnLift" in plan:
                 # Drive the base clear before any arm motion: tip retract/lift/unroll over the
                 # release pose shoved flipped pieces onto neighbours on the table.
                 try:
@@ -1477,6 +1528,13 @@ class SkillExecutor:
                     self._set_joint("wrist_roll", 0.0, ramp=False)
                 except (SkillFailed, OutOfReach):
                     pass
+                self._exit_long_reach(plan)
+                if "wristRoll" in plan and abs(float(self._state()["joints"].get("wrist_roll", 0.0))) >= self.config.joint_tol:
+                    self._set_joint("wrist_roll", 0.0)
+                self._set_joint("lift", self.config.stow_lift)
+                if "wristYaw" in plan:
+                    self._set_joint("wrist_yaw", 0.0)
+                self._backoff(plan)
             else:
                 reach_now = float(self._state()["joints"].get("reach", 0.0))
                 try:
@@ -1486,13 +1544,13 @@ class SkillExecutor:
                         self._set_joint("reach", self.config.retract_reach, ramp=False)
                     except (SkillFailed, OutOfReach):
                         pass
-            self._exit_long_reach(plan)
-            if "wristRoll" in plan and abs(float(self._state()["joints"].get("wrist_roll", 0.0))) >= self.config.joint_tol:
-                self._set_joint("wrist_roll", 0.0)
-            self._set_joint("lift", self.config.stow_lift)
-            if "wristYaw" in plan:
-                self._set_joint("wrist_yaw", 0.0)
-            self._backoff(plan)
+                self._exit_long_reach(plan)
+                if "wristRoll" in plan and abs(float(self._state()["joints"].get("wrist_roll", 0.0))) >= self.config.joint_tol:
+                    self._set_joint("wrist_roll", 0.0)
+                self._set_joint("lift", self.config.stow_lift)
+                if "wristYaw" in plan:
+                    self._set_joint("wrist_yaw", 0.0)
+                self._backoff(plan)
         except (SkillFailed, OutOfReach) as exc:
             job.log.append(f"exit after place: {exc}")
             try:
@@ -1500,6 +1558,87 @@ class SkillExecutor:
             except (SkillFailed, OutOfReach):
                 pass
         job.message = f"placed {plan['object']} on {plan['support']}"
+
+    def _insert_screw_into_hole(self, job: Job, plan: dict) -> None:
+        """Place the screw tip-down into a hole, verify it stands head-up in the hole, retry on miss.
+
+        Each failed verify re-picks the screw and re-plans the place (via runtime callbacks) until
+        ``maxAttempts`` is exhausted.
+        """
+        insert = dict(plan.get("insertParams") or {})
+        screw_id = str(insert.get("object") or plan.get("object") or "")
+        attempts = int(plan.get("maxAttempts") or insert.get("maxAttempts") or 3)
+        place_plan = plan
+        last_msg = "not seated"
+        for attempt in range(1, attempts + 1):
+            if self._stop.is_set():
+                raise SkillStopped()
+            holding = bool(self._state().get("gripper", {}).get("holding"))
+            if not holding:
+                if self._replan_pick is None or self._replan_insert_place is None:
+                    raise SkillFailed(
+                        f"insert attempt {attempt}: screw not in gripper and no replan hooks")
+                pick_plan = self._replan_pick(screw_id)
+                if pick_plan is None:
+                    raise SkillFailed(
+                        f"insert attempt {attempt}: cannot re-pick {screw_id} after a miss ({last_msg})")
+                job.log.append(f"insert attempt {attempt}: re-picking {screw_id}")
+                self._pick(job, pick_plan)
+                place_plan = self._replan_insert_place(insert)
+                if place_plan is None:
+                    raise SkillFailed(
+                        f"insert attempt {attempt}: cannot re-plan tip-down place for {screw_id}")
+            self._place(job, place_plan)
+            if self._verify_screw_seat is None:
+                job.message = f"inserted {screw_id} (no seat verify configured)"
+                return
+            ok, msg = self._verify_screw_seat(screw_id)
+            if ok:
+                job.log.append(msg)
+                job.message = f"inserted {screw_id} tip-down into hole"
+                return
+            last_msg = msg
+            job.log.append(f"insert attempt {attempt}/{attempts} failed: {msg}")
+            place_plan = plan
+        raise SkillFailed(
+            f"insert_screw_into_hole failed after {attempts} attempts ({last_msg}); "
+            "screw must stand tip-down in the hole with head up")
+
+    def _drive_screw(self, job: Job, plan: dict) -> None:
+        """Roll the screwdriver bit-down (shaft must already cross the gripper), press onto the
+        screw head, hold to tighten, then raise — still holding the driver for the next screw.
+
+        Predict refuses an end-on grasp (shaft on the wrist-roll axis). Re-assert wrist roll after
+        reaching out (dock/reach can clear the wrist).
+        """
+        self._dock(job, plan)
+        grip = plan.get("gripSpot", plan["spot"])
+        self._align_lateral(grip)
+        self._restore_planned_reach(plan, grip)
+        if "wristYaw" in plan:
+            self._ramp_joint("wrist_yaw", plan["wristYaw"], self.config.wrist_turn_s)
+        if "wristRoll" in plan:
+            self._ramp_joint("wrist_roll", plan["wristRoll"], self.config.wrist_turn_s)
+            job.log.append(f"stood screwdriver bit-down (roll={plan['wristRoll']:.2f})")
+        self._set_joint("lift", plan["lift"])
+        self._reach_out(grip, plan.get("wristPitch"))
+        self._align_lateral(grip)
+        # Reach/dock merges often drop wrist setpoints; lock bit-down again before pressing.
+        if "wristYaw" in plan:
+            self._set_joint("wrist_yaw", plan["wristYaw"])
+        if "wristRoll" in plan:
+            self._set_joint("wrist_roll", plan["wristRoll"])
+        self._set_joint("lift", plan["pressLift"])
+        self._wait(float(plan.get("driveS", 1.5)))
+        job.log.append(f"drove {plan['target']} with {plan['object']}")
+        # Raise while keeping the bit down so the next drive_screw starts upright.
+        self._set_joint("lift", plan["lift"])
+        try:
+            self._exit_long_reach(plan)
+        except (SkillFailed, OutOfReach) as exc:
+            job.log.append(f"exit after drive_screw: {exc}")
+        self._backoff(plan)
+        job.message = f"drove {plan['target']} with {plan['object']}"
 
     def _pour(self, job: Job, plan: dict) -> None:
         """Hold the container low over the spot, tip it slowly about the arm, wait for the contents
@@ -1820,7 +1959,8 @@ class SkillExecutor:
             self._ramp_joint("wrist_roll", plan["wristRoll"], self.config.wrist_turn_s)
         self._set_joint("lift", plan["lift"])
         self._command({"gripper": "open"})
-        self._released(plan["object"], plan["floor"])
+        tip = float(plan["wristRoll"]) if "wristRoll" in plan else None
+        self._released(plan["object"], plan["floor"], tip_roll=tip)
         self._wait(self.config.release_wait_s)
         job.log.append(f"released {plan['object']} on the floor at ({plan['floor'][0]:.2f}, {plan['floor'][1]:.2f})")
         if "wristRoll" in plan:

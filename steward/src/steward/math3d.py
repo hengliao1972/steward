@@ -57,6 +57,17 @@ def yaw_from_quat(q: Sequence[float]) -> float:
     return math.atan2(2.0 * (w * z + x * y), 1.0 - 2.0 * (y * y + z * z))
 
 
+def tip_roll_from_quat(q: Sequence[float]) -> float:
+    """Body tip about +x after yaw is removed: 0 upright, ±π/2 lying on a side.
+
+    :param q: world orientation of the body (MuJoCo ``[w, x, y, z]``).
+    :returns: tip angle in radians about body +x.
+    """
+    yaw = yaw_from_quat(q)
+    body = matrix_from_quat(quat_conj(quat_from_yaw(yaw))) @ matrix_from_quat(q)
+    return math.atan2(float(body[2, 1]), float(body[2, 2]))
+
+
 def quat_from_matrix(m: np.ndarray) -> Quat:
     """Convert a 3x3 rotation matrix to a unit quaternion."""
     m = np.asarray(m, dtype=float)

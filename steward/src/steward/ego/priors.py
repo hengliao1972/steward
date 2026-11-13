@@ -36,6 +36,7 @@ CATEGORY_PRIORS: dict[str, dict] = {
     "car_body": {"role": "object", "root": {"free": 1.0}, "affordances": ["graspable"], "fragility": 0.1},
     "car_wheel": {"role": "object", "root": {"free": 1.0}, "affordances": ["graspable"], "fragility": 0.05},
     "toy_screw": {"role": "object", "root": {"free": 1.0}, "affordances": ["graspable"], "fragility": 0.0},
+    "screw_board": {"role": "object", "root": {"free": 1.0}, "affordances": ["graspable", "flat"], "fragility": 0.05},
     "electric_screwdriver": {"role": "object", "root": {"free": 1.0}, "affordances": ["graspable", "screwdriver"],
                              "fragility": 0.05},
     "manual": {"role": "object", "root": {"free": 1.0}, "affordances": ["graspable", "flat"], "fragility": 0.1},
@@ -54,27 +55,35 @@ UNKNOWN_PRIOR = {"role": "object", "root": {"free": 0.5, "fixed": 0.5}, "afforda
 # generators: place uses them to seat mating holes when Ego-State only carries category priors.
 SCREW_HOLES: dict[str, list[dict]] = {
     "airplane_fuselage": [
-        {"id": "wing_0", "p": [0.02, 0.012, 0.038]},
-        {"id": "wing_1", "p": [0.02, -0.012, 0.038]},
-        {"id": "gear_0", "p": [0.0, 0.012, 0.002]},
-        {"id": "gear_1", "p": [0.0, -0.012, 0.002]},
+        {"id": "wing_0", "p": [0.02, 0.012, 0.038], "n": [0.0, 0.0, 1.0]},
+        {"id": "wing_1", "p": [0.02, -0.012, 0.038], "n": [0.0, 0.0, 1.0]},
+        {"id": "gear_0", "p": [0.0, 0.012, 0.002], "n": [0.0, 0.0, -1.0]},
+        {"id": "gear_1", "p": [0.0, -0.012, 0.002], "n": [0.0, 0.0, -1.0]},
     ],
     "airplane_wing": [
-        {"id": "mount_0", "p": [0.0, 0.012, 0.008]},
-        {"id": "mount_1", "p": [0.0, -0.012, 0.008]},
+        {"id": "mount_0", "p": [0.0, 0.012, 0.008], "n": [0.0, 0.0, -1.0]},
+        {"id": "mount_1", "p": [0.0, -0.012, 0.008], "n": [0.0, 0.0, -1.0]},
     ],
-    "airplane_propeller": [{"id": "hub", "p": [0.0, 0.0, 0.004]}],
+    "airplane_propeller": [{"id": "hub", "p": [0.0, 0.0, 0.004], "n": [0.0, 0.0, -1.0]}],
     "airplane_landing_gear": [
-        {"id": "mount_0", "p": [0.0, 0.012, 0.023]},
-        {"id": "mount_1", "p": [0.0, -0.012, 0.023]},
+        {"id": "mount_0", "p": [0.0, 0.012, 0.023], "n": [0.0, 0.0, 1.0]},
+        {"id": "mount_1", "p": [0.0, -0.012, 0.023], "n": [0.0, 0.0, 1.0]},
     ],
     "car_body": [
-        {"id": "wheel_0", "p": [0.05, 0.048, 0.01575]},
-        {"id": "wheel_1", "p": [0.05, -0.048, 0.01575]},
-        {"id": "wheel_2", "p": [-0.05, 0.048, 0.01575]},
-        {"id": "wheel_3", "p": [-0.05, -0.048, 0.01575]},
+        {"id": "wheel_0", "p": [0.05, 0.048, 0.01575], "n": [0.0, 1.0, 0.0]},
+        {"id": "wheel_1", "p": [0.05, -0.048, 0.01575], "n": [0.0, -1.0, 0.0]},
+        {"id": "wheel_2", "p": [-0.05, 0.048, 0.01575], "n": [0.0, 1.0, 0.0]},
+        {"id": "wheel_3", "p": [-0.05, -0.048, 0.01575], "n": [0.0, -1.0, 0.0]},
     ],
-    "car_wheel": [{"id": "hub", "p": [0.0, 0.0, 0.008]}],
+    # Through-hole: either face accepts a screw when the hub axis is vertical (|upDot|).
+    "car_wheel": [{"id": "hub", "p": [0.0, 0.0, 0.008], "n": [0.0, 0.0, 1.0], "through": True}],
+    "toy_screw": [{"id": "tip", "p": [0.0, 0.0, 0.006], "n": [0.0, 0.0, -1.0]}],
+    "screw_board": [
+        {"id": "hole_0", "p": [0.07, 0.05, 0.009], "n": [0.0, 0.0, 1.0]},
+        {"id": "hole_1", "p": [0.07, -0.05, 0.009], "n": [0.0, 0.0, 1.0]},
+        {"id": "hole_2", "p": [-0.07, 0.05, 0.009], "n": [0.0, 0.0, 1.0]},
+        {"id": "hole_3", "p": [-0.07, -0.05, 0.009], "n": [0.0, 0.0, 1.0]},
+    ],
 }
 
 # Words that name a listed category in other terms ("desk" for a table).
