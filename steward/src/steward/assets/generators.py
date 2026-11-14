@@ -347,13 +347,16 @@ SCREW_STEEL = [0.55, 0.58, 0.62, 1.0]
 DRIVER_ORANGE = [0.90, 0.40, 0.08, 1.0]
 
 
-def _hole(p: list[float], radius: float = 0.006, depth: float = 0.005):
+def _hole(p: list[float], radius: float = 0.006, depth: float = 0.005, axis=None):
     """A dark cylinder that marks a screw hole on a part's surface."""
-    return primitive("cylinder", [radius, depth], pose([p[0], p[1], p[2]]), HOLE)
+    q = quat_from_axis_angle([1, 0, 0], -math.copysign(math.pi / 2, axis[1])) if axis and axis[1] else None
+    return primitive("cylinder", [radius, depth], pose(list(p), q), HOLE)
 
 
-def _hole_affordance(hole_id: str, p: list[float]) -> Est:
-    return exact({"screw-hole": {"id": hole_id, "p": list(p)}})
+def _hole_affordance(hole_id: str, p: list[float], *, axis=None, entry=None, depth: float = 0.005) -> Est:
+    axis = axis or [0, 0, 1]
+    entry = entry or [p[i] + 0.0025 * axis[i] for i in range(3)]
+    return exact({"screw-hole": {"id": hole_id, "p": list(p), "axis": axis, "entry": entry, "depth": depth}})
 
 
 def airplane_fuselage(length: float = 0.18, width: float = 0.045, height: float = 0.04, mass: float = 0.08) -> Entity:
@@ -367,8 +370,10 @@ def airplane_fuselage(length: float = 0.18, width: float = 0.045, height: float 
         primitive("box", [0.03, 0.006, 0.03], pose([-length / 2 + 0.02, 0, height + 0.01]), TOY_RED),
         *(_hole(p) for p in wing_holes + gear_holes),
     ]
-    affordances = [exact("graspable"), *(_hole_affordance(f"wing_{i}", p) for i, p in enumerate(wing_holes)),
-                   *(_hole_affordance(f"gear_{i}", p) for i, p in enumerate(gear_holes))]
+    affordances = [exact("graspable"),
+                   *(_hole_affordance(f"wing_{i}", p, depth=height + 0.001) for i, p in enumerate(wing_holes)),
+                   *(_hole_affordance(f"gear_{i}", p, axis=[0, 0, -1], depth=height + 0.001)
+                     for i, p in enumerate(gear_holes))]
     link = Link(id="body", name="airplane fuselage", geometry={"collision": geoms}, inertial=exact({"mass": mass}),
                 material=exact({"friction": 0.85, "fragility": 0.1}), affordances=affordances)
     return _entity("airplane_fuselage", "object", "free", [link])
@@ -382,7 +387,7 @@ def airplane_wing(chord: float = 0.055, span: float = 0.20, height: float = 0.01
         primitive("box", [chord, span, height], pose([0, 0, height / 2]), TOY_RED),
         *(_hole(p) for p in mount),
     ]
-    affordances = [exact("graspable"), *(_hole_affordance(f"mount_{i}", p) for i, p in enumerate(mount))]
+    affordances = [exact("graspable"), *(_hole_affordance(f"mount_{i}", p, depth=height + 0.0005) for i, p in enumerate(mount))]
     link = Link(id="body", name="airplane wing", geometry={"collision": geoms}, inertial=exact({"mass": mass}),
                 material=exact({"friction": 0.85, "fragility": 0.1}), affordances=affordances)
     return _entity("airplane_wing", "object", "free", [link])
@@ -397,13 +402,14 @@ def airplane_propeller(radius: float = 0.03, thickness: float = 0.008, mass: flo
     ]
     link = Link(id="body", name="airplane propeller", geometry={"collision": geoms}, inertial=exact({"mass": mass}),
                 material=exact({"friction": 0.8, "fragility": 0.15}),
-                affordances=[exact("graspable"), _hole_affordance("hub", [0.0, 0.0, thickness / 2])])
+                affordances=[exact("graspable"), _hole_affordance("hub", [0.0, 0.0, thickness / 2],
+                                                            entry=[0, 0, thickness * 1.4], depth=thickness * 1.4)])
     return _entity("airplane_propeller", "object", "free", [link])
 
 
 def airplane_landing_gear(width: float = 0.08, depth: float = 0.03, height: float = 0.025, mass: float = 0.03) -> Entity:
     """Landing gear with two screw holes that match the fuselage underside."""
-    top_z = height - 0.002
+    top_z = 0.008 - 0.002  # holes sit on the crossbar, not in the air above it
     holes = [[0.0, 0.012, top_z], [0.0, -0.012, top_z]]
     geoms = [
         primitive("box", [depth, width, 0.008], pose([0, 0, 0.004]), STEEL),
@@ -411,7 +417,7 @@ def airplane_landing_gear(width: float = 0.08, depth: float = 0.03, height: floa
         primitive("cylinder", [0.008, height], pose([0, -(width / 2 - 0.01), height / 2]), STEEL),
         *(_hole(p) for p in holes),
     ]
-    affordances = [exact("graspable"), *(_hole_affordance(f"mount_{i}", p) for i, p in enumerate(holes))]
+    affordances = [exact("graspable"), *(_hole_affordance(f"mount_{i}", p, depth=0.0085) for i, p in enumerate(holes))]
     link = Link(id="body", name="airplane landing gear", geometry={"collision": geoms},
                 inertial=exact({"mass": mass}), material=exact({"friction": 0.85, "fragility": 0.05}),
                 affordances=affordances)
@@ -425,9 +431,11 @@ def car_body(length: float = 0.16, width: float = 0.10, height: float = 0.045, m
     geoms = [
         primitive("box", [length, width, height], pose([0, 0, height / 2]), TOY_BLUE),
         primitive("box", [length * 0.45, width * 0.7, height * 0.5], pose([-0.01, 0, height + height * 0.2]), TOY_BLUE),
-        *(_hole(p, radius=0.007) for p in holes),
+        *(_hole(p, radius=0.007, axis=[0, math.copysign(1, p[1]), 0]) for p in holes),
     ]
-    affordances = [exact("graspable"), *(_hole_affordance(f"wheel_{i}", p) for i, p in enumerate(holes))]
+    affordances = [exact("graspable"),
+                   *(_hole_affordance(f"wheel_{i}", p, axis=[0, math.copysign(1, p[1]), 0], depth=width + 0.001)
+                     for i, p in enumerate(holes))]
     link = Link(id="body", name="car body", geometry={"collision": geoms}, inertial=exact({"mass": mass}),
                 material=exact({"friction": 0.85, "fragility": 0.1}), affordances=affordances)
     return _entity("car_body", "object", "free", [link])
@@ -442,7 +450,8 @@ def car_wheel(radius: float = 0.025, thickness: float = 0.016, mass: float = 0.0
     ]
     link = Link(id="body", name="car wheel", geometry={"collision": geoms}, inertial=exact({"mass": mass}),
                 material=exact({"friction": 0.95, "fragility": 0.05}),
-                affordances=[exact("graspable"), _hole_affordance("hub", [0.0, 0.0, thickness / 2])])
+                affordances=[exact("graspable"), _hole_affordance("hub", [0.0, 0.0, thickness / 2],
+                                                            entry=[0, 0, thickness + 0.0005], depth=thickness * 1.025 + 0.0005)])
     return _entity("car_wheel", "object", "free", [link])
 
 
@@ -453,7 +462,9 @@ def toy_screw(length: float = 0.022, shaft: float = 0.004, head: float = 0.008, 
         primitive("cylinder", [shaft, length - 0.004], pose([0, 0, (length - 0.004) / 2]), SCREW_STEEL),
     ]
     link = Link(id="body", name="screw", geometry={"collision": geoms}, inertial=exact({"mass": mass}),
-                material=exact({"friction": 0.7, "fragility": 0.0}), affordances=[exact("graspable")])
+                material=exact({"friction": 0.7, "fragility": 0.0}),
+                affordances=[exact("graspable"), exact({"screw": {"axis": [0, 0, 1], "tip": [0, 0, 0],
+                    "head": [0, 0, length], "seat": [0, 0, length - 0.004]}})])
     return _entity("toy_screw", "object", "free", [link])
 
 
@@ -468,7 +479,8 @@ def electric_screwdriver(length: float = 0.16, grip: float = 0.035, mass: float 
     ]
     link = Link(id="body", name="electric screwdriver", geometry={"collision": geoms}, inertial=exact({"mass": mass}),
                 material=exact({"friction": 0.8, "fragility": 0.05}),
-                affordances=[exact("graspable"), exact("screwdriver")])
+                affordances=[exact("graspable"), exact("screwdriver"),
+                            exact({"powered-driver": {"axis": [1, 0, 0], "tip": [length, 0, grip / 2]}})])
     return _entity("electric_screwdriver", "object", "free", [link])
 
 

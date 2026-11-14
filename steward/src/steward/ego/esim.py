@@ -17,6 +17,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from steward.ego.arm import Arm, slide_arm
+from steward.math3d import quat_from_yaw, wrap_angle, matrix_from_quat
 from steward.ego.planner import (
     FLOOR_LYING_M,
     Box2D,
@@ -30,6 +31,7 @@ from steward.ego.planner import (
     room_centre,
     protrusion,
     rects_overlap,
+    escape_prefix,
 )
 from steward.math3d import yaw_from_quat
 from steward.scene.schema import Entity, SceneState
@@ -38,6 +40,8 @@ from steward.scene.schema import Entity, SceneState
 @dataclass
 class EsimConfig:
     capture_radius: float = 0.05
+    hole_fit_tolerance_m: float = 0.003  # sensor-fit tolerance, not a task acceptance criterion
+    hole_assignment_limit: int = 4096  # bound work; ask for explicit feature selection above it
     # Where the drawer skill closes the gripper again when the planned handle point held nothing:
     # reach offsets along the arm, then base steps across it (m). A swollen drawer front puts the
     # estimate past or short of the real handle, and a miss only costs the next closing.
@@ -208,7 +212,9 @@ class Esim:
             value = aff.value
             if isinstance(value, dict) and "screw-hole" in value:
                 hole = value["screw-hole"]
-                out.append({"id": str(hole["id"]), "p": [float(v) for v in hole["p"][:3]]})
+                out.append({**hole, "id": str(hole["id"]), "p": [float(v) for v in hole["p"][:3]],
+                            "source": aff.src or "unknown",
+                            "frame": hole.get("frame", "entity" if aff.src == "observed" else "unregistered")})
         return out
 
     def _anchor(self, es: SceneState, support: Entity) -> Entity:
@@ -289,6 +295,21 @@ class Esim:
 
     def _receipt(self, es: SceneState, skill: str, params: dict, risk: float, issues: list[str], plan: dict,
                  feasible: bool = True) -> dict:
+        warnings = list(plan.get('targetEvidence', {}).get('warnings', []))
+        requested = {params.get(k) for k in ('target', 'body', 'part', 'on')}
+        for entity in es.entities:
+            orientation = entity.state_vars.get('orientation')
+            info = (orientation.value or {}) if orientation else {}
+            registration = info.get('holeRegistration') or {}
+            warnings.extend(dict(w, entity=entity.id) for w in registration.get('warnings', []))
+            holes = self._screw_holes(entity)
+            if any(h.get('frame') != 'entity' for h in holes):
+                warnings.append(dict(reason='unregistered_interface', entity=entity.id, featureCount=len(holes)))
+            if info.get('posture', {}).get('status') == 'inconsistent':
+                warnings.append(dict(reason='suspect_posture', entity=entity.id,
+                    posture=info['posture'], extentXM=entity_box(entity)[0].hx*2))
+            if entity.id in requested and entity.pose.t is not None and es.stamp-entity.pose.t > 20:
+                warnings.append(dict(reason='stale_pose_estimate', entity=entity.id, ageS=es.stamp-entity.pose.t))
         return {
             "id": f"rcpt-{next(self._ids)}",
             "skill": skill,
@@ -299,6 +320,7 @@ class Esim:
             "risk": round(float(min(1.0, max(0.0, risk))), 4),
             "feasible": feasible,
             "issues": issues,
+            "warnings": warnings,
             "plan": plan,
         }
 
@@ -425,7 +447,13 @@ class Esim:
                 reasons.append(f"side {normal}: no continuous arm approach and retraction at yaw {wrist_yaw:.2f}, "
                                f"roll {wrist_roll:.2f}, pitch {pitch:.2f}; try another placement or heading")
                 continue
-            blocked = self._turn_blocked(obstacles_all, predock, self._sweep(carry))
+            ryaw = self._robot_xy_yaw(es)[2]
+            reuse_dock = (abs(wrap_angle(ryaw-yaw)) < .02
+                and math.hypot(dock[0]-rx, dock[1]-ry) <= cfg.predock_backoff
+                and all(self._footprint_blocked(obstacles_all,
+                    (rx+(dock[0]-rx)*t, ry+(dock[1]-ry)*t), yaw, carry) is None
+                    for t in np.linspace(0., 1., max(2, math.ceil(math.hypot(dock[0]-rx,dock[1]-ry)/.01)+1))))
+            blocked = None if reuse_dock else self._turn_blocked(obstacles_all, predock, self._sweep(carry))
             if blocked:
                 reasons.append(f"side {normal}: no room to turn at the pre-dock pose ({blocked})")
                 continue
@@ -446,7 +474,7 @@ class Esim:
                     reasons.append(f"side {normal}: carrying {load.id} from here the robot could not back out to "
                                    "a spot with room to turn")
                     continue
-            path = astar(grid, (rx, ry), predock)
+            path = [[rx,ry]] if reuse_dock else self._navigation_path(es, obstacles_all, predock, carry, grid)
             if path is None:
                 reasons.append(f"side {normal}: no collision-free path to the pre-dock pose")
                 continue
@@ -679,6 +707,27 @@ class Esim:
             d += 0.05
         return None
 
+    def _navigation_path(self, es, obstacles, goal, carry=None, grid=None):
+        rx, ry, yaw = self._robot_xy_yaw(es)
+        radius = self._sweep(carry)
+        if grid is None:
+            grid = build_grid(obstacles, radius+self.config.nav_margin, [(rx, ry), goal])
+        if self._turn_blocked(obstacles, (rx, ry), radius) is None:
+            return astar(grid, (rx, ry), goal, start_clear=0.)
+        exit_point = escape_prefix(obstacles, (rx, ry), yaw,
+            (self.half_x+.01, self.half_y+.01),
+            carry_box=(lambda xy: self._carried_box(carry, xy, yaw)) if carry is not None else None,
+            turn_radius=radius, margin=self.config.nav_margin+grid.res,
+            max_distance=self.config.carry_retreat_max)
+        if exit_point is None:
+            return None
+        tail = astar(grid, tuple(exit_point[:2]), goal, start_clear=0.)
+        if tail is None:
+            return None
+        # A third value specifies fixed yaw for this translation only. It survives
+        # receipt serialization; the executor must not turn before this waypoint.
+        return [[rx, ry], exit_point] + tail[1:]
+
     def _boxed_in(self, es: SceneState, obstacles: list[Box2D], carry: tuple | None) -> str | None:
         """When a carried load leaves no room to turn where the robot stands, say how to get out:
         put the load down where it is, or, where it would then trap the base, on a surface."""
@@ -774,6 +823,16 @@ class Esim:
     def predict(self, es: SceneState, skill: str, params: dict) -> dict:
         self._blockers = set()
         try:
+            if skill == '_simple_driver':
+                from steward.ego.fasten_simple import driver_stroke
+                return driver_stroke(self, es, params)
+            if skill in ('seat_screw', 'drive_screw', 'fasten_onto', 'flip_assembly', 'regrasp_upright', '_fastener_contact', '_fastener_reset', '_stage_screw', '_upright_tool'):
+                from steward.ego.fasten_plan import predict, contact, reset_tool
+                if skill == '_fastener_reset':
+                    return reset_tool(self, es, params)
+                return contact(self, es, params) if skill in ('_fastener_contact', '_stage_screw', '_upright_tool') else predict(self, es, skill, params)
+            if skill == "assemble_onto":
+                return self._predict_assemble_onto(es, params)
             if skill == "navigate":
                 return self._predict_navigate(es, params)
             if skill == "pick":
@@ -784,7 +843,7 @@ class Esim:
                 return self._predict_drawer(es, skill, params)
             if skill == "pour":
                 return self._predict_pour(es, params)
-            raise PredictionError(f"unknown skill {skill!r}; known: navigate, pick, place, pour, open, close")
+            raise PredictionError(f"unknown skill {skill!r}; known: assemble_onto, navigate, pick, place, pour, open, close")
         except PredictionError as exc:
             blockers = self._describe_blockers(es)
             issues = [str(exc)] + [
@@ -794,6 +853,52 @@ class Esim:
             receipt = self._receipt(es, skill, params, 1.0, issues, {}, feasible=False)
             receipt["blockers"] = blockers
             return receipt
+
+    def _predict_assemble_onto(self, es: SceneState, params: dict) -> dict:
+        part, body = es.find(str(params.get('part', ''))), es.find(str(params.get('body', '')))
+        if part is None or body is None or part is body:
+            raise PredictionError(f'assemble_onto needs distinct perceived part and body ids: '
+                                  f'part={params.get("part")!r} present={part is not None}; '
+                                  f'body={params.get("body")!r} present={body is not None}')
+        if self._held(es) is not None:
+            raise PredictionError('assemble_onto starts with an empty hand; park the held part first')
+        admission_warnings = []
+        for obj in (part, body):
+            if not self._screw_holes(obj):
+                raise PredictionError(f'{obj.id} has no known interface; observe/name it before assembly')
+            info = obj.state_vars.get('orientation')
+            frozen = (info.value or {}).get('stationaryAssembly', {}) if info else {}
+            if frozen.get('status') == 'invalidated':
+                admission_warnings.append(dict(reason='stationary_reference_estimated', entity=obj.id))
+            if obj is part and frozen:
+                raise PredictionError('the loose part cannot be a frozen assembly body')
+        body_info = body.state_vars.get('orientation')
+        ledger = (body_info.value or {}).get('stationaryAssembly', {}) if body_info else {}
+        for installed in ledger.get('parts', []):
+            if installed['entity'] == part.id or (installed.get('category') == part.category.value
+                    and np.linalg.norm(np.asarray(installed['position'])[:2]-part.pose.value['p'][:2]) < .08):
+                raise PredictionError('part is already released at this body; inspect instead of assembling it again')
+        anchor = self._anchor(es, body)
+        if anchor is body or not self._affords(anchor, 'support-surface'):
+            from steward.ego.fasten_plan import support_anchor
+            anchor = support_anchor(self, es, body, admission_warnings)
+        for obj, selector in ((body, params.get('hole')), (part, params.get('heldHole'))):
+            holes = self._screw_holes(obj)
+            chosen = self._select_holes(holes, selector, obj.id)
+            groups = {h.get('group') for h in chosen if h.get('group')}
+            if any(h.get('group') in groups and h not in chosen for h in holes):
+                raise PredictionError('assemble_onto requires a complete interface prefix, not one hole of a group')
+        source = lambda o: {'id': o.id, 'category': o.category.value, 'position': list(o.pose.value['p'])}
+        plan = {'part': part.id, 'body': body.id, 'support': anchor.id,
+                'partSource': source(part), 'bodySource': source(body),
+                **{k: params[k] for k in ('hole', 'heldHole', 'deferVerify', 'closeRelease') if params.get(k) is not None},
+                'stages': ['observe_multiview', 'freeze', 'pick', 'fit_and_place', 'retreat_verify'],
+                'stagedPrediction': True}
+        receipt = self._receipt(es, 'assemble_onto', params, .02,
+                             ['Staged controller: every motion is freshly predicted and risk-gated before execution; '
+                              'later stages may fail. Frozen geometry is a stationary assumption, not fresh verification.'], plan)
+        receipt['warnings'].extend(admission_warnings)
+        return receipt
 
     def _predict_navigate(self, es: SceneState, params: dict) -> dict:
         rx, ry, ryaw = self._robot_xy_yaw(es)
@@ -806,7 +911,7 @@ class Esim:
         blocked = self._footprint_blocked(obstacles, goal, yaw, carry)
         if blocked:
             raise PredictionError(f"goal pose collides with {blocked}")
-        path = astar(grid, (rx, ry), goal)
+        path = self._navigation_path(es, obstacles, goal, carry, grid)
         if path is None:
             hint = self._boxed_in(es, obstacles, carry)
             raise PredictionError("no collision-free path to the goal" + (f"; {hint}" if hint else ""))
@@ -829,6 +934,19 @@ class Esim:
             raise PredictionError(f"unknown target {params.get('target')!r}")
         if self._held(es) is not None:
             raise PredictionError("the gripper is already holding an object")
+        assembly_grip = None
+        if params.get('assemblyGrip'):
+            from copy import deepcopy
+            info = target.state_vars.get('orientation')
+            ledger = (info.value or {}).get('stationaryAssembly', {}) if info else {}
+            ref = ledger.get('reference')
+            if ref:
+                assembly_grip = ref
+                target = deepcopy(target)
+                target.pose.value = dict(p=list(ref['position']), q=quat_from_yaw(ref['yaw']))
+                if 'graspHeightM' in ref:
+                    target.pose.value['p'][2] = ref['graspHeightM']
+                target.rigid.links[0].geometry['collision'][0]['size'] = list(ref['size'])
         tbox, target_bottom, _ = entity_box(target)
         tableware_sized = max(tbox.hx, tbox.hy) * 2 < self.config.graspable_max_m and target_bottom > 0.3
         miscategorised = not self._affords(target, "graspable")
@@ -847,7 +965,7 @@ class Esim:
         if on_floor:
             # Resting on the floor, its base is at floor level whatever the noisy height estimate says.
             tp[2] = max((target_top - target_bottom) / 2, self.lift_min)
-        elif support is not None and self._affords(support, "support-surface"):
+        elif support is not None and self._affords(support, "support-surface") and not (assembly_grip and 'graspHeightM' in assembly_grip):
             # Resting on a surface, its centre is no lower than the top plus half its height: a grasp
             # closed below that presses what it holds into the surface and tips it (an edge grasp
             # tips a box enough to spill what lies in it).
@@ -888,6 +1006,35 @@ class Esim:
             # Drawer picks use ``require_tilt`` so the least pitch is still positive; most-tilt at the
             # low close height is often outside the USD envelope (needs ~0.70 m+ at 0.50 m reach).
             pitches = [None, most] if most > 0 else [None]
+        driver_heading = None
+        if params.get('prepareDriver') or params.get('prepareUpright'):
+            from steward.ego.fasten_plan import driver_grasp_heading
+            driver_heading = driver_grasp_heading(self, es, target, most)
+            pitches = [most]
+        if params.get('topGrasp'):
+            pitches = [0.]
+        grasp_wrist = None
+        assembly_points = None
+        if assembly_grip:
+            opening = self.arm.geometry.jaw_opening
+            if opening is not None and 2*min(target_box.hx,target_box.hy) >= opening:
+                raise PredictionError('body middle is wider than the gripper opening')
+            angle = assembly_grip['yaw'] + (math.pi/2 if target_box.hy > target_box.hx else 0.)
+            def grasp_wrist(heading):
+                candidates = [wrap_angle(angle-heading+k*math.pi) for k in (-1,0,1)]
+                return min(candidates, key=abs), 0.
+            def driver_heading(heading):
+                return None if abs(grasp_wrist(heading)[0]) <= self.arm.geometry.wrist_yaw_max else 'body pinch wrist yaw unreachable'
+            # A middle-quarter pinch clears an overlaid transverse component's root;
+            # the short body width, not the merged wing span, goes between the jaws.
+            from steward.ego.fasten_release import body_grip_points, loose_components
+            assembly_points = body_grip_points(assembly_grip, loose_components(es, target.id))
+            if not assembly_points:
+                raise PredictionError('no exposed body pinch outside loose component volumes')
+            rx,ry,_ = self._robot_xy_yaw(es)
+            quarter = max(target_box.hx, target_box.hy)*.5
+            assembly_points.sort(key=lambda v:(round(abs(math.hypot(*v[1])-quarter), 6),
+                                               math.hypot(v[0][0]-rx,v[0][1]-ry)))
         approach, grasp_offset, grasp_z = None, None, tp[2]
         first: PredictionError | None = None
         rim_z = max(tp[2], target_top - self.config.edge_grasp_depth) if self._affords(target, "container") else tp[2]
@@ -897,7 +1044,7 @@ class Esim:
         floor = self.config.elevated_grasp_floor
         in_drawer = support is not None and support.category.value == "drawer"
         approach_over = None
-        for xy, offset in self._grasp_points(es, target, tp):
+        for xy, offset in (assembly_points or self._grasp_points(es, target, tp)):
             base_z = rim_z if any(offset) else tp[2]
             if in_drawer and most > 0:
                 # Prefer the object's true height so a short bottle is not grasped in air; raise only
@@ -909,6 +1056,9 @@ class Esim:
                 raise_steps = ((0.12, 0.16, 0.20, 0.24) if low
                                else ((0.0, 0.04, 0.08, 0.12) if most > 0 else (0.0,)))
                 close_floor = floor if low else 0.0
+            if params.get('topGrasp') or assembly_grip:
+                raise_steps = (0.,)
+                close_floor = 0.
             for raise_z in raise_steps:
                 z = min(self.lift_max, max(base_z + raise_z, close_floor))
                 if in_drawer and most > 0:
@@ -927,8 +1077,8 @@ class Esim:
                 try:
                     approach = self._approach(es, anchor, xy, dock_h,
                                               {target.id}, load=target if carried_low else None,
-                                              heading_issue=self._edge_facing(offset) if self.config.edge_grasp_first else None,
-                                              pitches=pitches,
+                                              heading_issue=driver_heading or (self._edge_facing(offset) if self.config.edge_grasp_first else None),
+                                              pitches=pitches, wrist=grasp_wrist,
                                               lifts=path_lifts,
                                               require_tilt=in_drawer and most > 0)
                 except PredictionError as exc:
@@ -1027,6 +1177,14 @@ class Esim:
                 "carryLift": carry_lift, "keepReach": carried_low,
                 "captureRadius": r,
                 "gentle": self._affords(target, "pourable")}
+        if params.get('stayNear'):
+            plan['stayNear'] = True
+        if assembly_grip:
+            plan.update(assemblyGrip=True, wristYaw=grasp_wrist(approach['yaw'])[0], protectGraspFrame=True,
+                        graspWidthM=2*min(target_box.hx,target_box.hy), graspSource='frozen_body_middle')
+        holes = self._screw_holes(target)
+        if holes and all(h.get("frame") == "entity" for h in holes):
+            plan["protectGraspFrame"] = True
         if approach_over is not None:
             plan["approachLift"] = approach_over
         if grasp_z > tp[2]:
@@ -1034,32 +1192,84 @@ class Esim:
         if grasp_offset is not None and any(grasp_offset):
             plan["graspOffset"] = list(grasp_offset)
             issues.append(f"{target.id} is taken by its edge, {math.hypot(*grasp_offset):.2f} m from its centre")
-        if params.get("flip") and self.config.flip_in_air:
+        if (params.get("flip") and self.config.flip_in_air) or params.get("prepareDriver"):
             plan["wristPitch"] = self.arm.geometry.wrist_pitch_max
-        return self._receipt(es, "pick", params, risk, issues, plan)
+        receipt = self._receipt(es, "pick", params, risk, issues, plan)
+        if params.get('prepareDriver'):
+            from steward.ego.fasten_plan import tool_estimate
+            receipt['warnings'].extend(tool_estimate(target, es.stamp).get('warnings', []))
+        return receipt
 
     def _predict_place(self, es: SceneState, params: dict) -> dict:
         held = self._held(es)
         if held is None:
             raise PredictionError("the gripper is not holding anything")
         support = es.find(params.get("on", "")) if "on" in params else None
+        seat_entry = None
+        if params.get('seatBody') and params.get('seatHole'):
+            from steward.ego.fasten_plan import seat_target
+            from steward.ego.fasten_release import component_support
+            seat_entry = seat_target(self, es, dict(body=params['seatBody'],
+                part=params['on'], hole=params['seatHole']))
+            if seat_entry.get('componentFrame'):
+                support = component_support(es, seat_entry['componentFrame'])
         if support is None and "on" in params:
             raise PredictionError(f"unknown support {params.get('on')!r}")
         if params.get("flip") and params.get("roll") is not None:
             raise PredictionError("place cannot flip and roll at once; flip turns it upside down, roll tips it on its side")
+        assembly_placement = None
+        assembly_ignore = set()
+        if params.get('assemblyBody') == held.id:
+            from copy import deepcopy
+            from steward.ego.assembly_motion import local_bounds
+            info = held.state_vars.get('orientation')
+            ledger = (info.value or {}).get('stationaryAssembly', {}) if info else {}
+            if ledger.get('reference'):
+                low, high = local_bounds(ledger)
+                assembly_placement = (low, high)
+                assembly_ignore.update(ledger.get('aliases', []))
+                assembly_ignore.update(p['entity'] for p in ledger.get('parts', []))
+                held = deepcopy(held)
+                size = 2*np.maximum(abs(low),abs(high))
+                size[:2] = max(size[:2])  # covers base/wrist yaw changes while docking
+                held.rigid.links[0].geometry['collision'][0]['size'] = size.tolist()
         held_box, hb, ht = entity_box(held)
         held_h = ht - hb
         held_half = max(held_box.hx, held_box.hy)
         place_roll = self._place_roll(params)
+        flip_roll = math.pi
+        if assembly_placement is not None and params.get('flip') and not self.config.flip_in_air:
+            from steward.ego.assembly_motion import half_turn_roll
+            try:
+                flip_roll = half_turn_roll(self._arm_joints(es).get('wrist_roll', 0.),
+                                           self.arm.geometry.wrist_roll_max)
+            except ValueError as exc:
+                raise PredictionError(str(exc)) from exc
         if place_roll is not None and abs(abs(place_roll) - math.pi / 2) <= 0.2:
             # A quarter turn about the arm stands the former horizontal extent up.
             held_h, held_half = 2.0 * held_half, held_h / 2.0
         if support is None and "at" in params:
+            if params.get("alignHoles") is not False and (params.get("alignHoles") is True
+                    or params.get("alignTo") is not None or params.get("hole") is not None):
+                raise PredictionError("[RSI_ALIGN_REQUIRED] floor placement does not support hole alignment; "
+                                      "specify an observed support and mate, or use alignHoles=false for ordinary placement")
             return self._predict_floor_place(es, held, params)
         if support is None:
             raise PredictionError(f"unknown support {params.get('on')!r}")
+        support_orientation = getattr(support, "state_vars", {}).get("orientation")
+        support_posture = ((support_orientation.value or {}).get("posture", {})
+                           if support_orientation is not None else {})
         mate, aligned_offset, aligned_yaw, align_issues = self._place_hole_align(es, held, support, params)
         place_params = dict(params)
+        if (aligned_offset is None and params.get("yaw") is None and self._screw_holes(held)
+                and not params.get("flip") and place_roll is None):
+            orientation = getattr(held, "state_vars", {}).get("orientation")
+            before = (orientation.value or {}).get("graspWorldYawRad") if orientation is not None else None
+            if before is not None:
+                place_params["yaw"] = float(before)
+                align_issues.append("[RSI_TRANSPORT_YAW] ordinary placement of an interface part restores "
+                                    "its pre-transport estimated heading; this is not hole alignment or "
+                                    "observed directed yaw. Explicit yaw overrides this default")
         mating_on = False
         if aligned_offset is not None:
             place_params["offset"] = list(aligned_offset)
@@ -1089,6 +1299,20 @@ class Esim:
             # fuselage). Mark the plan so release only checks the centre, not footprint containment.
             mating_on = bool(self._screw_holes(support) and not self._affords(support, "support-surface"))
             sbox, _, top = entity_box(support)
+            assembly = (support_orientation.value or {}).get('assembly') if support_orientation else None
+            if mate is support and assembly:
+                ref = assembly['reference']
+                top = ref.get('landingTopM', ref['position'][2] + ref['size'][2]/2)
+            if params.get('seatBody') and params.get('seatHole'):
+                # The mating crossbar can lie below the part's legs. Use the
+                # selected interface surface, not the global top of its box.
+                from steward.ego.fasten_plan import seat_target
+                entry = seat_entry
+                top = float(entry['point'][2])
+                # Resolve a world target in THIS receipt's support frame. An
+                # offset computed before a perception update can move with a mask.
+                from steward.ego.fasten_simple import offset_on
+                place_params['offset'] = offset_on(support, entry['point'][:2])
             final_yaw = float(place_params["yaw"]) if place_params.get("yaw") is not None else held_box.yaw
             # Mating onto a part that is not furniture: keep the load on its footprint, not inset.
             edge_keep = 0.0 if mating_on else None
@@ -1098,11 +1322,33 @@ class Esim:
             clear = float(place_params.get("clearance",
                                          self.config.place_clearance if flip_place else 0.015))
             spot, issues = self._choose_spot(es, support, sbox, held, held_box, place_params.get("offset"),
-                                             final_yaw, clear, edge_keep=edge_keep)
+                                             final_yaw, clear, edge_keep=edge_keep,
+                                             ignore_ids=assembly_ignore, flat_ok=assembly_placement is not None)
             issues = align_issues + issues
             area = sbox
+            if params.get('closeRelease') and seat_entry is None:
+                from steward.ego.fasten_plan import fresh_view
+                from steward.ego.fasten_geometry import surface_patch
+                view = fresh_view(support, es.stamp)
+                patch = (surface_patch(view['points'], spot, max_tilt_deg=25) if view and
+                         es.stamp-view['stamp'] <= 20 and not view['truncated'] and
+                         view['invalidDepthFraction'] <= .05 else None)
+                if patch:
+                    # Clear the higher edge of the footprint over a sloping
+                    # support; do not drive the crossbar into its high end.
+                    normal = np.asarray(patch['normal'])
+                    slope = -normal[:2]/normal[2]
+                    c,s=math.cos(final_yaw),math.sin(final_yaw)
+                    local_slope=np.array([[c,s],[-s,c]]) @ slope
+                    top = patch['point'][2]+float(abs(local_slope) @ [held_box.hx,held_box.hy])
             surface = top
-            height = top + held_h / 2 + 0.02 + self._hold_dz(es, held)
+            release_gap = .002 if params.get('closeRelease') else .02
+            height = top + held_h / 2 + release_gap + self._hold_dz(es, held)
+            if assembly_placement is not None:
+                low, high = assembly_placement
+                bottom = high[2] if params.get('flip') else -low[2]
+                hold_dz = self._hold_dz(es, held) * (-1 if params.get('flip') else 1)
+                height = top + bottom + .02 + hold_dz
             ex, ey = self._turned_half(held_box, final_yaw, sbox.yaw)
             edge = self._edge_margin(sbox, spot, ex, ey)
             sigma = self._sigma_xy(support)
@@ -1138,29 +1384,96 @@ class Esim:
                 return 0.0
             return self._wrist_for(es, held, float(yaw_goal), dock_yaw, flip) - self._arm_joints(es).get("wrist_yaw", 0.0)
 
-        tool_roll = (math.pi if flip and not self.config.flip_in_air else place_roll)
+        tool_roll = (flip_roll if flip and not self.config.flip_in_air else place_roll)
         approach, grip = self._grip_approach(es, self._anchor(es, support), held, spot, height, wrist_turn, flip, turn,
-                                             lifts=[over, height] if over is not None else None, tool_roll=tool_roll)
+                                             lifts=[over, height] if over is not None else None, tool_roll=tool_roll,
+                                             exact_rotation=assembly_placement is not None)
+        assembly_turn = None
+        if assembly_placement is not None and flip and not self.config.flip_in_air:
+            low, high = assembly_placement
+            lx,ly,*_ = self._held_relative(es)
+            joints = self._arm_joints(es)
+            offset = [lx-self.tool_offset-joints.get('reach',0.), ly-self.lateral, self._hold_dz(es,held)]
+            radius = float(np.linalg.norm(np.maximum(abs(low), abs(high)))+np.linalg.norm(offset))
+            assembly_turn = max(height, surface+radius+abs(self._hold_dz(es,held))+.02)
+            pitch = float(approach.get('wristPitch') or 0.)
+            wy = approach.get('wristYaw', self._arm_joints(es).get('wrist_yaw', 0.))
+            rr = self._arm_joints(es).get('wrist_roll', 0.)
+            # Rigid combination rotates clear of the table before lowering.
+            path = [dict(lift=assembly_turn, reach=approach['reach'], wrist_yaw=wy,
+                         wrist_roll=float(r), wrist_pitch=pitch) for r in np.linspace(rr, flip_roll, 19)]
+            path += [dict(lift=float(z), reach=approach['reach'], wrist_yaw=wy,
+                          wrist_roll=flip_roll, wrist_pitch=pitch) for z in np.linspace(assembly_turn,height,8)]
+            if not self.arm.reachable_path(path):
+                raise PredictionError('assembly half-turn or lowering path physically unreachable')
         fragility = (held.rigid.links[0].material.value or {}).get("fragility", 0.0) if held.rigid.links[0].material else 0.0
         risk = 1.0 - (1.0 - risk) * (1.0 - 0.05 * fragility)
         plan = {**approach, "object": held.id, "support": support.id, "spot": list(spot), "gripSpot": list(grip),
                 "lift": height, "supportBox": {"cx": area.cx, "cy": area.cy, "yaw": area.yaw, "hx": area.hx, "hy": area.hy},
                 "heldHalf": held_half}
+        if seat_entry is not None:
+            plan['seatTarget'] = seat_entry
+        if assembly_turn is not None:
+            plan["assemblyTurnLift"] = assembly_turn
         if mate is not None:
             plan["alignTo"] = mate.id
+            # These are actuator/estimated-geometry bounds, not a declaration that
+            # the holes or the final pose have been observed to coincide.
+            plan["placementToleranceM"] = 0.02
+            if not mating_on:
+                plan["releaseHalfXY"] = list(self._turned_half(held_box, float(aligned_yaw), area.yaw))
         if mating_on:
             plan["mate"] = True
         if over is not None:
             plan["approachLift"] = over
         if yaw_goal is not None:
             plan["wristYaw"] = self._wrist_for(es, held, float(yaw_goal), approach["yaw"], bool(params.get("flip")))
+            plan["placementTarget"] = {
+                "yawRad": float(yaw_goal), "sizeM": [2 * held_box.hx, 2 * held_box.hy, ht - hb],
+                "support": support.id, "planar": not params.get("flip") and place_roll is None,
+                "partCategory": held.category.value,
+            }
+        if mate is not None and 'placementTarget' in plan:
+            orientation = mate.state_vars.get('orientation')
+            info = orientation.value if orientation else {}
+            saved = info.get('assembly', {}).get('reference')
+            category = (info.get('holeRegistration') or {}).get('templateCategory', mate.category.value)
+            box, bottom, top = entity_box(mate)
+            plan['placementTarget']['mateReference'] = saved or {
+                'entity': mate.id, 'category': category,
+                'family': 'toy_airplane' if category == 'airplane_fuselage' else category,
+                'position': list(mate.pose.value['p']), 'yaw': box.yaw,
+                'size': [2*box.hx, 2*box.hy, top-bottom],
+                'holes': self._screw_holes(mate),
+                'holeSource': 'observed' if all(h.get('source') == 'observed' for h in self._screw_holes(mate)) else 'prior',
+                'registration': info.get('holeRegistration'),
+                'support': self._anchor(es, mate).id, 'registeredAt': mate.pose.t,
+            }
+            from steward.ego.fasten_release import placement_pairs
+            plan['placementTarget']['holePairs'] = placement_pairs(
+                self, held, mate, spot, float(yaw_goal), params)
+        if mate is not None and 'placementTarget' in plan and plan['placementTarget']['planar']:
+            holes = self._screw_holes(held)
+            orientation = held.state_vars.get('orientation')
+            info = orientation.value if orientation else {}
+            if holes and all(h.get('frame') == 'entity' for h in holes):
+                # Transported registered geometry, never a new visual observation.
+                plan['placementTarget']['releasedFrame'] = {
+                    'holes': holes, 'registration': info.get('holeRegistration'),
+                    'settledCentreZM': surface + held_h/2,
+                    'sourceObservedAt': (info.get('graspObservedAt') if info.get('graspObservedAt') is not None else held.pose.t),
+                }
         if params.get("flip"):
-            plan["wristRoll"] = math.pi  # turned over about the arm axis before it is set down
+            plan["wristRoll"] = flip_roll
+            if assembly_placement is not None:
+                plan['relativeTurn'] = dict(fromRoll=self._arm_joints(es).get('wrist_roll', 0.),
+                                            toRoll=flip_roll)
             if self.config.flip_in_air:
                 plan.update(self._turn_over_plan(es, held, plan, height, surface, area))
         elif place_roll is not None:
             plan["wristRoll"] = place_roll  # tipped about the arm (e.g. π/2 to set it down on its side)
         plan["gentle"] = self._affords(held, "pourable")
+        plan['stayNear'] = bool(params.get('stayNear', False))
         return self._receipt(es, "place", params, risk, issues, plan)
 
     def _place_hole_align(self, es: SceneState, held: Entity, support: Entity,
@@ -1173,33 +1486,57 @@ class Esim:
 
         :returns: ``(mate, offset_xy, yaw, issues)``; offset/yaw are None when not aligning.
         """
+        if params.get("alignHoles") is False:
+            return None, None, None, []
+        requested = (params.get("alignHoles") is True or params.get("alignTo") is not None
+                     or params.get("hole") is not None)
         held_holes = self._screw_holes(held)
-        if not held_holes or params.get("alignHoles") is False:
+        if not held_holes:
+            if requested:
+                raise PredictionError(f"[RSI_ALIGN_REQUIRED] {held.id} has no screw holes; "
+                                      "requested alignment cannot be planned. Verify the held object's identity "
+                                      "and features; ordinary placement requires alignHoles=false.")
             return None, None, None, []
         mate_id = params.get("alignTo")
         if mate_id is not None:
             mate = es.find(mate_id)
             if mate is None:
                 raise PredictionError(f"unknown alignTo {mate_id!r}")
-        elif self._screw_holes(support) and (params.get("alignHoles") is True or params.get("offset") is None):
+        elif self._screw_holes(support) and (requested or params.get("offset") is None):
             mate = support
         else:
+            if requested:
+                raise PredictionError(f"[RSI_ALIGN_REQUIRED] {support.id} has no screw holes to align to; "
+                                      "observe the intended mate or specify alignTo. "
+                                      "Ordinary placement requires alignHoles=false.")
             return None, None, None, []
         mate_holes = self._screw_holes(mate)
         if not mate_holes:
             raise PredictionError(f"{mate.id} has no screw holes to align to")
-        hole = params.get("hole")
-        if hole is not None:
-            picked = [h for h in mate_holes if h["id"] == hole or h["id"].startswith(f"{hole}_") or h["id"].startswith(str(hole))]
-            if not picked:
-                picked = [h for h in mate_holes if str(hole) in h["id"]]
-            if not picked:
-                raise PredictionError(f"{mate.id} has no screw hole matching {hole!r}")
-            mate_holes = picked
-        offset_mate, yaw, used = self._mate_offset_yaw(held, held_holes, mate, mate_holes)
-        if mate is support:
-            offset = offset_mate
-        else:
+        if params.get("flip") or abs(float(params.get("roll") or 0)) > 1e-6:
+            raise PredictionError("[RSI_ASSEMBLY_POSTURE] planar hole fitting cannot validate a flipped/rolled release; "
+                                  "recover posture separately on a clear stable support, reobserve, then mate")
+        posture_warnings = []
+        for obj in (held, mate):
+            orient = getattr(obj, 'state_vars', {}).get('orientation')
+            posture = (orient.value or {}).get('posture', {}) if orient else {}
+            if posture.get('status') == 'inconsistent' or posture.get('upright') is False:
+                posture_warnings.append(f"[RSI_ASSEMBLY_POSTURE] {obj.id}: {posture}; best estimate used, verify after release")
+        # Only observed features or outline-registered priors can enter the fitter.
+        unregistered = [obj.id for obj, holes in ((held, held_holes), (mate, mate_holes))
+                        if any(h.get("frame") != "entity" or not (
+                            h.get("source") == "observed" or
+                            (h.get("source") == "prior" and h.get("registration") == "outline_axes"
+                             and len(h.get("positionsByRegistration", [])) == 2)) for h in holes)]
+        if unregistered:
+            posture_warnings.append(f"[RSI_HOLE_FRAME] assumed entity coordinates for {unregistered}; count={len(unregistered)}; verify after release")
+        held_holes = self._select_holes(held_holes, params.get("heldHole"), held.id)
+        mate_holes = self._select_holes(mate_holes, params.get("hole"), mate.id)
+        registered = any(h.get("registration") == "outline_axes" for h in held_holes + mate_holes)
+
+        def on_support(offset_mate):
+            if mate is support:
+                return np.asarray(offset_mate)
             # Express the held centre (mate frame) as an offset on the surface under it.
             mx, my, myaw = mate.pose.value["p"][0], mate.pose.value["p"][1], yaw_from_quat(mate.pose.value["q"])
             wx = mx + math.cos(myaw) * offset_mate[0] - math.sin(myaw) * offset_mate[1]
@@ -1207,81 +1544,209 @@ class Esim:
             sbox, _, _ = entity_box(support)
             dx, dy = wx - sbox.cx, wy - sbox.cy
             c, s = math.cos(-sbox.yaw), math.sin(-sbox.yaw)
-            offset = [c * dx - s * dy, s * dx + c * dy]
+            return np.array([c * dx - s * dy, s * dx + c * dy])
+
+        use_catalog = params.get("hole") is None and params.get("heldHole") is None
+        group_pairs, grouped = self._hole_group_pairs(held_holes, mate_holes, use_catalog)
+        candidates = self._hole_fit_candidates(held, held_holes, mate, mate_holes, params.get("yaw"),
+                                               use_catalog=use_catalog)
+        candidates = [(on_support(o), a, pairs) for o, a, pairs in candidates]
+        # An explicit offset selects among same-yaw alternatives; it never overrides the fit.
+        if params.get("offset") is not None:
+            wanted = np.asarray(params["offset"], float)
+            if wanted.shape != (2,) or not np.isfinite(wanted).all():
+                raise PredictionError("[RSI_HOLE_MATCH] offset must be two finite surface-frame coordinates")
+            cfg = getattr(self, "config", None) or EsimConfig()
+            candidates = [(o, a, pairs) for o, a, pairs in candidates
+                          if np.linalg.norm(o - wanted) <= cfg.hole_fit_tolerance_m]
+        issues = posture_warnings + ["[RSI_ASSEMBLY_POSTURE] planar fit does not observe uprightness. Keep the mate stationary; "
+                  "check top/side features and support before release, then reobserve both parts. "
+                  "Task-required pose changes must be planned separately before registering the new interface frame; "
+                  "a merged box is not attachment and a planar fit does not validate a side/underside interface"]
+        orientation = getattr(held, "state_vars", {}).get("orientation")
+        grasp_yaw = (orientation.value or {}).get("graspWorldYawRad") if orientation is not None else None
+        offset, yaw, used = self._choose_hole_fit(
+            candidates, "offset", registered=registered,
+            preferred_yaw=(grasp_yaw if grasp_yaw is not None else yaw_from_quat(held.pose.value["q"])),
+            issues=issues)
+        if grasp_yaw is not None and len(candidates) > 1:
+            issues.append("[RSI_MATING_FRAME] ambiguous fits ranked against the pre-transport estimated "
+                          "heading; transport must not select the opposite half-turn. Directed yaw remains unknown")
         ids = ", ".join(f"{a}->{b}" for a, b in used)
-        return mate, offset, yaw, [f"aligned screw holes on {mate.id}: {ids}"]
+        issues.append(f"[RSI_HOLE_MATCH] aligned screw holes on {mate.id}: {ids}; "
+                      "planar fit only; verify pose and seating after release")
+        if grouped:
+            issues.append(f"[RSI_HOLE_GROUP] catalogue selected {len(group_pairs)} compatible interface pairs; "
+                          "hole/heldHole explicitly override catalogue pairing")
+        if registered:
+            issues.append("[RSI_HOLE_REGISTER] used outline-compatible prior hypotheses, not observed holes; "
+                          "half-turn alternatives remain hypotheses; reobserve after release")
+        if len(used) == 1:
+            issues.append("[RSI_YAW_AMBIGUOUS] [RSI_SINGLE_HOLE_YAW] one hole leaves yaw unconstrained; "
+                          + ("using the requested yaw" if params.get("yaw") is not None else
+                             "restoring the pre-transport estimated heading when available, otherwise preserving the held heading")
+                          + f" ({yaw:.6f} world radians). This cancels estimated transport rotation, not initial yaw uncertainty; "
+                          "supply yaw for a repeatable world-frame command. A round or near-square outline cannot "
+                          "verify directed orientation; inspect an asymmetric feature and reobserve after release")
+        return mate, offset, yaw, issues
+
+    @staticmethod
+    def _select_holes(holes: list[dict], selector, entity_id: str) -> list[dict]:
+        """Explicit identifiers or an identifier prefix; no category/family inference."""
+        if selector is None:
+            return holes
+        if isinstance(selector, (list, tuple)):
+            wanted = set(selector)
+            picked = [h for h in holes if h['id'] in wanted]
+            if len(picked) != len(wanted):
+                raise PredictionError(f'{entity_id} is missing selected interface holes')
+            return picked
+        name = str(selector)
+        exact = [h for h in holes if h["id"] == name]
+        picked = exact or [h for h in holes if h["id"].startswith(name + "_")]
+        if not picked:
+            raise PredictionError(f"{entity_id} has no hole matching {name!r}")
+        return picked
 
     def _mate_offset_yaw(self, held: Entity, held_holes: list[dict], mate: Entity,
-                         mate_holes: list[dict]) -> tuple[list[float], float, list[tuple[str, str]]]:
-        """Held-centre offset in the mate frame and world yaw that overlays ``held_holes`` on ``mate_holes``."""
-        held_pts = np.array([[h["p"][0], h["p"][1]] for h in held_holes], dtype=float)
-        mate_pts = np.array([[h["p"][0], h["p"][1]] for h in mate_holes], dtype=float)
+                         mate_holes: list[dict], yaw: float | None = None
+                         ) -> tuple[list[float], float, list[tuple[str, str]]]:
+        """Fit selected observed or registered holes, retaining ambiguity instead of polar order.
+
+        Distinct proper rotations/translations within the sensor-fit tolerance are alternatives,
+        not evidence that the first permutation is correct. A caller's camera-grounded world
+        yaw constrains the fit itself, including translation for off-centre features.
+        """
+        return self._choose_hole_fit(self._hole_fit_candidates(held, held_holes, mate, mate_holes, yaw),
+                                     "offsetInMateM", preferred_yaw=yaw_from_quat(held.pose.value["q"]))
+
+    @staticmethod
+    def _hole_frames(holes: list[dict]) -> list[list[dict]]:
+        if not any(h.get("registration") == "outline_axes" for h in holes):
+            return [holes]
+        # One index for the entire rigid object, never independent sign choices per hole.
+        return [[{**h, "p": h["positionsByRegistration"][i]} for h in holes] for i in range(2)]
+
+    @staticmethod
+    def _hole_group_pairs(held_holes, mate_holes, use_catalog=True):
+        """Read interface compatibility from descriptors, never ids or categories.
+
+        Missing metadata keeps the unconstrained geometry path. When both sides
+        declare interfaces, each group is indivisible and both declarations must
+        permit the pair. Explicit feature selectors bypass catalogue preferences.
+        """
+        if not use_catalog or not all("group" in h and "mates" in h for h in held_holes + mate_holes):
+            return [(held_holes, mate_holes)], False
+
+        def groups(holes):
+            out = {}
+            for h in holes:
+                out.setdefault(h["group"], []).append(h)
+            return out
+
+        pairs = [(hh, mh) for hg, hh in sorted(groups(held_holes).items())
+                 for mg, mh in sorted(groups(mate_holes).items())
+                 if len(hh) == len(mh) and all(mg in h["mates"] for h in hh)
+                 and all(hg in h["mates"] for h in mh)]
+        return pairs, True
+
+    def _hole_fit_candidates(self, held: Entity, held_holes: list[dict], mate: Entity,
+                             mate_holes: list[dict], yaw: float | None = None, *, use_catalog=True):
+        cfg = getattr(self, "config", None) or EsimConfig()
+        groups, grouped = self._hole_group_pairs(held_holes, mate_holes, use_catalog)
+        if grouped and not groups:
+            raise PredictionError("[RSI_HOLE_GROUP] no compatible catalogue interfaces; "
+                                  "verify identity or explicitly select hole/heldHole")
+        frames = [(self._hole_frames(sorted(hh, key=lambda h: h["id"])),
+                   self._hole_frames(sorted(mh, key=lambda h: h["id"]))) for hh, mh in groups]
+        assignments = sum(math.perm(len(mf[0]), len(hf[0])) * len(hf) * len(mf) for hf, mf in frames)
+        if assignments > cfg.hole_assignment_limit:
+            raise PredictionError("[RSI_HOLE_MATCH] too many possible assignments; select heldHole and hole")
+        candidates = []
+        for held_frames, mate_frames in frames:
+            for hh, mh in itertools.product(held_frames, mate_frames):
+                for o, a, pairs in self._fit_one_hole_frame(held, hh, mate, mh, yaw):
+                    if not any(abs(_wrap(a - angle)) < 1e-7 and np.linalg.norm(o - off) < 1e-7
+                               for off, angle, _ in candidates):
+                        candidates.append((o, a, pairs))
+        return candidates
+
+    def _fit_one_hole_frame(self, held, held_holes, mate, mate_holes, yaw):
+        cfg = getattr(self, "config", None) or EsimConfig()
+        n, m = len(held_holes), len(mate_holes)
+        if not n or n > m:
+            raise PredictionError("[RSI_HOLE_MATCH] too few mate holes; observe all required features "
+                                  "or explicitly select heldHole and hole; constraints will not be truncated")
+        if math.perm(m, n) > cfg.hole_assignment_limit:
+            raise PredictionError("[RSI_HOLE_MATCH] too many possible assignments; select heldHole and hole")
+        hp = np.asarray([h["p"][:2] for h in held_holes], float)
+        mp = np.asarray([h["p"][:2] for h in mate_holes], float)
+        if not np.isfinite(hp).all() or not np.isfinite(mp).all() or (yaw is not None and not math.isfinite(float(yaw))):
+            raise PredictionError("[RSI_HOLE_MATCH] non-finite feature geometry or yaw")
         myaw = yaw_from_quat(mate.pose.value["q"])
-        if len(held_holes) == 1 or len(mate_holes) == 1:
-            # One hub onto one of several mounts: choose the mate hole nearest the held part today.
-            hi = 0 if len(held_holes) == 1 else int(np.argmin(np.linalg.norm(held_pts, axis=1)))
-            hx, hy = held.pose.value["p"][0], held.pose.value["p"][1]
-            mx, my = mate.pose.value["p"][0], mate.pose.value["p"][1]
-            dx, dy = hx - mx, hy - my
-            lx = math.cos(-myaw) * dx - math.sin(-myaw) * dy
-            ly = math.sin(-myaw) * dx + math.cos(-myaw) * dy
-            mi = int(np.argmin(np.linalg.norm(mate_pts - np.array([lx, ly]), axis=1)))
-            yaw_rel = 0.0
-            c, s = math.cos(yaw_rel), math.sin(yaw_rel)
-            offset = [float(mate_pts[mi][0] - (c * held_pts[hi][0] - s * held_pts[hi][1])),
-                      float(mate_pts[mi][1] - (s * held_pts[hi][0] + c * held_pts[hi][1]))]
-            return offset, myaw + yaw_rel, [(held_holes[hi]["id"], mate_holes[mi]["id"])]
-        # Multi-hole sets of equal size: order by angle about the centroid, then a planar Kabsch step.
-        n = min(len(held_holes), len(mate_holes))
-        if len(held_holes) != len(mate_holes):
-            # Prefer mate holes that fit this part (wing↔wing, gear↔gear, wheel↔wheel).
-            mate_holes = self._compatible_mate_holes(held, held_holes, mate_holes)
-            mate_pts = np.array([[h["p"][0], h["p"][1]] for h in mate_holes], dtype=float)
-            n = min(len(held_holes), len(mate_holes))
-        h_ord, h_ids = self._holes_polar(held_holes[:n])
-        m_ord, m_ids = self._holes_polar(mate_holes[:n])
-        if len(h_ord) != len(m_ord) or len(h_ord) == 0:
-            h_c, m_c = held_pts.mean(0), mate_pts.mean(0)
-            offset = [float(m_c[0] - h_c[0]), float(m_c[1] - h_c[1])]
-            return offset, myaw, [(held_holes[0]["id"], mate_holes[0]["id"])]
-        h_c, m_c = h_ord.mean(0), m_ord.mean(0)
-        ha, ma = h_ord - h_c, m_ord - m_c
-        cov = ma.T @ ha
-        u, _, vt = np.linalg.svd(cov)
-        r = u @ vt
-        if np.linalg.det(r) < 0:
-            u[:, -1] *= -1
-            r = u @ vt
-        yaw_rel = float(math.atan2(r[1, 0], r[0, 0]))
-        c, s = math.cos(yaw_rel), math.sin(yaw_rel)
-        offset = [float(m_c[0] - (c * h_c[0] - s * h_c[1])),
-                  float(m_c[1] - (s * h_c[0] + c * h_c[1]))]
-        return offset, myaw + yaw_rel, list(zip(h_ids, m_ids))
+        hc = hp.mean(0)
+        ha = hp - hc
+        # Coincident points, like a single point, cannot constrain rotation.
+        free_yaw = n == 1 or float(np.linalg.norm(ha)) < 1e-9
+        if free_yaw and yaw is None:
+            orientation = getattr(held, "state_vars", {}).get("orientation")
+            before = (orientation.value or {}).get("graspWorldYawRad") if orientation is not None else None
+            # A circular outline has an arbitrary frame, but encoders still tell
+            # us how much we rotated it since grasping. Undo that transport turn
+            # instead of inheriting the heading of the pick's retreat waypoint.
+            yaw = float(before) if before is not None else yaw_from_quat(held.pose.value["q"])
+        candidates = []
+        for indices in itertools.permutations(range(m), n):
+            matched = mp[list(indices)]
+            mc = matched.mean(0)
+            if yaw is None:
+                u, _, vt = np.linalg.svd((matched - mc).T @ ha)
+                r = u @ vt
+                if np.linalg.det(r) < 0:
+                    u[:, -1] *= -1
+                    r = u @ vt
+            else:
+                angle = float(yaw) - myaw
+                c, sn = math.cos(angle), math.sin(angle)
+                r = np.array([[c, -sn], [sn, c]])
+            offset = mc - r @ hc
+            error = float(np.linalg.norm(hp @ r.T + offset - matched, axis=1).max())
+            if error > cfg.hole_fit_tolerance_m:
+                continue
+            angle = _wrap(myaw + math.atan2(r[1, 0], r[0, 0]))
+            # Collapse identical transforms only, not physically different near-symmetric fits.
+            if any(abs(_wrap(angle - a)) < 1e-7 and np.linalg.norm(offset - o) < 1e-7
+                   for o, a, _ in candidates):
+                continue
+            used = [(h["id"], mate_holes[j]["id"]) for h, j in zip(held_holes, indices)]
+            candidates.append((offset, angle, used))
+        return candidates
 
     @staticmethod
-    def _compatible_mate_holes(held: Entity, held_holes: list[dict], mate_holes: list[dict]) -> list[dict]:
-        """Mate holes that fit the held part: category family first, else a shared id prefix."""
-        family = {"airplane_wing": "wing", "airplane_propeller": "wing", "airplane_landing_gear": "gear",
-                  "car_wheel": "wheel"}.get(held.category.value)
-        if family is not None:
-            picked = [h for h in mate_holes if h["id"].startswith(family)]
-            if picked:
-                return picked
-        held_names = " ".join(h["id"] for h in held_holes)
-        for prefix in ("wing", "gear", "wheel", "mount", "hub"):
-            if prefix in held_names:
-                picked = [h for h in mate_holes if h["id"].startswith(prefix)]
-                if picked:
-                    return picked
-        return mate_holes
-
-    @staticmethod
-    def _holes_polar(holes: list[dict]) -> tuple[np.ndarray, list[str]]:
-        """Hole XY ordered counter-clockwise about their centroid, with matching ids."""
-        pts = np.array([[h["p"][0], h["p"][1]] for h in holes], dtype=float)
-        c = pts.mean(0)
-        order = np.argsort(np.arctan2(pts[:, 1] - c[1], pts[:, 0] - c[0]))
-        return pts[order], [holes[i]["id"] for i in order]
+    def _choose_hole_fit(candidates, offset_key, *, registered=False, preferred_yaw=0., issues=None):
+        prefix = "[RSI_HOLE_REGISTER] outline-compatible prior; " if registered else ""
+        if not candidates:
+            raise PredictionError(prefix + "[RSI_HOLE_MATCH] no rigid planar fit within sensor tolerance; "
+                                  "reobserve features or correct the requested yaw/offset/selection")
+        # Minimise the held object's rotation. Stable ties preserve template frame
+        # order (primary before half-turn), then the sorted feature-id traversal.
+        # Rounding removes numerical SVD noise from otherwise identical rotations.
+        ranked = sorted(candidates, key=lambda c: round(abs(_wrap(c[1] - preferred_yaw)), 10))
+        if len(ranked) > 1 and issues is not None:
+            alternatives = [{"yaw": a, "yawDeg": math.degrees(a), offset_key: o.tolist(),
+                             "pairs": pairs} for o, a, pairs in ranked]
+            issues.append(prefix + f"[RSI_YAW_AMBIGUOUS] {len(ranked)} geometric alternatives: {alternatives}; "
+                          "using the first candidate by minimum preferred-heading rotation, then stable template/feature order. "
+                          "This default is not observed disambiguation. Verify after release: retract and obtain fresh views of both parts. "
+                          "Compare relative centres AND visible asymmetric features with the hypotheses. "
+                          "Only if independent evidence rejects this fit and supports another, "
+                          "re-identify, pick again and re-place using another listed candidate's world yaw "
+                          "(radians) and offset in the on-surface frame. hole/heldHole override catalogue pairing. "
+                          "An undirected outer axis cannot resolve a half turn. If the features and relative centres "
+                          "are identical under both hypotheses, do not blindly re-pick or alternate; directed yaw "
+                          "remains unknown. Keep verified parts and their supports undisturbed; unknown evidence is not success")
+        offset, angle, used = ranked[0]
+        return offset.tolist(), angle, used
 
     def _place_roll(self, params: dict) -> float | None:
         """Wrist roll for place, or None to leave the tool upright. Mutually exclusive with ``flip``."""
@@ -1357,7 +1822,7 @@ class Esim:
                        wrist_turn: Callable[[float], float], flip: bool,
                        heading_issue: Callable[[float], str | None] | None = None,
                        lifts: Sequence[float] | None = None,
-                       tool_roll: float | None = None) -> tuple[dict, tuple[float, float]]:
+                       tool_roll: float | None = None, exact_rotation: bool = False) -> tuple[dict, tuple[float, float]]:
         """The approach that brings the held object's centre over ``spot``, and the gripper's spot
         for it: on each side of the support, where the gripper goes for the heading docked there.
 
@@ -1369,6 +1834,15 @@ class Esim:
                 turn = wrist_turn(heading)
             except PredictionError:
                 turn = 0.0  # a side the wrist cannot turn at is refused by heading_issue
+            if exact_rotation:
+                lx,ly,*_ = self._held_relative(es)
+                offset = np.array([lx-self.tool_offset-current.get('reach',0.), ly-self.lateral,
+                                   -self._hold_dz(es,held)])
+                pitch = current.get('wrist_pitch',0.)
+                r0 = self.arm.tool_rotation(current.get('wrist_yaw',0.), current.get('wrist_roll',0.),pitch)
+                r1 = self.arm.tool_rotation(current.get('wrist_yaw',0.)+turn,roll,pitch)
+                moved = matrix_from_quat(quat_from_yaw(heading)) @ r1 @ r0.T @ offset
+                return spot[0]-float(moved[0]), spot[1]-float(moved[1])
             return self._grip_spot(es, spot, heading, turn, flip)
 
         current = self._arm_joints(es)
@@ -1590,7 +2064,7 @@ class Esim:
                 reasons.append(f"heading {math.degrees(h):.0f} deg: no straight approach with room to turn while "
                                f"carrying {held.id}")
                 continue
-            path = astar(grid, (rx, ry), predock)
+            path = self._navigation_path(es, obstacles, predock, nav_load, grid)
             if path is None:
                 reasons.append(f"heading {math.degrees(h):.0f} deg: no collision-free path while carrying {held.id}")
                 continue
@@ -1757,7 +2231,7 @@ class Esim:
             raise PredictionError(f"no room to turn in front of {drawer.id} ({blocked})")
         rx, ry, _ = self._robot_xy_yaw(es)
         grid = build_grid(obstacles, self.radius + cfg.nav_margin, [(rx, ry), predock])
-        path = astar(grid, (rx, ry), predock)
+        path = self._navigation_path(es, obstacles, predock, grid=grid)
         if path is None:
             raise PredictionError(f"no collision-free path to the front of {drawer.id}")
         sigma = math.hypot(self._sigma_xy(drawer), self._sigma_xy(self._self(es)))
@@ -1813,7 +2287,8 @@ class Esim:
 
     def _choose_spot(self, es: SceneState, support: Entity, sbox: Box2D, held: Entity, held_box: Box2D,
                      offset: list | None, yaw: float | None = None,
-                     clearance: float = 0.015, edge_keep: float | None = None) -> tuple[tuple[float, float], list[str]]:
+                     clearance: float = 0.015, edge_keep: float | None = None,
+                     ignore_ids=(), flat_ok=False) -> tuple[tuple[float, float], list[str]]:
         """A spot for ``held`` on ``support``: ``offset`` in the support frame if given, else the free
         spot nearest the robot. A requested spot where the held footprint, turned to ``yaw``, would
         come within ``clearance`` of another object moves to the free spot nearest it, at most
@@ -1835,10 +2310,15 @@ class Esim:
 
         others = []
         on_support = set()
+        def occupies(ent):
+            if ent is None or ent.id in ignore_ids:
+                return False
+            _, bottom, top = entity_box(ent)
+            return not (flat_ok and top-bottom <= .004 and top <= entity_box(support)[2]+.008)
         for rel in es.relations:
             if rel.type == "supported-by" and rel.b.get("entity") == support.id and rel.a["entity"] != held.id:
                 ent = es.find(rel.a["entity"])
-                if ent is not None:
+                if occupies(ent):
                     others.append(entity_box(ent)[0])
                     on_support.add(ent.id)
         # Contents of a receptacle already on ``support`` (puzzle pieces in a box on the table)
@@ -1846,7 +2326,7 @@ class Esim:
         for rel in es.relations:
             if rel.type == "supported-by" and rel.b.get("entity") in on_support and rel.a["entity"] != held.id:
                 ent = es.find(rel.a["entity"])
-                if ent is not None:
+                if occupies(ent):
                     others.append(entity_box(ent)[0])
         c, s = math.cos(sbox.yaw), math.sin(sbox.yaw)
 

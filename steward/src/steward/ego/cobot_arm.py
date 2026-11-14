@@ -444,6 +444,11 @@ class PiperArm(Arm):
                 last = exc
         return None, last
 
+    def tool_rotation(self, yaw: float, roll: float, pitch: float = 0.0):
+        pitched = quat_mul(quat_from_axis_angle([0., 1., 0.], -pitch), TOOL_DOWN)
+        return matrix_from_quat(quat_mul(quat_from_axis_angle([0., 0., 1.], yaw),
+            quat_mul(pitched, quat_from_axis_angle([0., 0., 1.], roll))))
+
     def reachable(self, lift: float, reach: float, wrist_yaw: float = 0.0, wrist_roll: float = 0.0,
                   wrist_pitch: float = 0.0) -> bool:
         # Endpoint existence does not imply a continuous path from the current posture.

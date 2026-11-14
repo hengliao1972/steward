@@ -32,6 +32,8 @@ import numpy as np
 from steward.glrender import close_renderer, encode_image, free_camera
 from steward.math3d import matrix_from_quat, pose_compose, pose_inverse, quat_from_yaw, quat_mul, quat_normalize, yaw_from_quat
 from steward.scene.extent import entity_body_ids, entity_obb
+from steward.scene.fasteners import FastenConfig
+from steward.world.fastening import Fastening
 from steward.scene.mjcf import MjcfBuild, build_mjcf
 from steward.scene.schema import Relation, RigidTree, SceneState, exact
 
@@ -217,7 +219,8 @@ def _robot_state(ent) -> _RobotState:
 class WorldSim:
     def __init__(self, scene: dict, *, timestep: float = 0.002, speed: float = 1.0, seed: int = 0,
                  perception: PerceptionConfig | None = None, grasp: GraspConfig | None = None,
-                 overview_camera: dict | None = None, freeze_idle: bool = False, appearance: str = "flat"):
+                 overview_camera: dict | None = None, freeze_idle: bool = False, appearance: str = "flat",
+                 fasten: FastenConfig | None = None):
         self._initial_scene = copy.deepcopy(scene)
         self.timestep = timestep
         self.speed = speed
@@ -230,6 +233,7 @@ class WorldSim:
         self.max_batch = 25
         self.perception = perception or PerceptionConfig()
         self.grasp = grasp or GraspConfig()
+        self.fasten = fasten if fasten is not None else FastenConfig.from_env()
         self._seed = seed
         self._overview = overview_camera
         self.appearance = appearance
@@ -250,7 +254,7 @@ class WorldSim:
         self.template = SceneState.from_dict(scene_dict)
         cameras = [self._overview or self._default_overview()]
         self.build: MjcfBuild = build_mjcf(self.template, timestep=self.timestep, extra_cameras=cameras,
-                                           appearance=self.appearance)
+                                           appearance=self.appearance, fasteners=self.fasten.mode != "off")
         self.model = self.build.compile()
         self.data = mujoco.MjData(self.model)
         self.build.apply_initial(self.model, self.data)
@@ -262,6 +266,7 @@ class WorldSim:
         self._holds: dict[str, _Hold] = {}
         self._renderers: dict[tuple[int, int], mujoco.Renderer] = {}
         self._index_bodies()
+        self._fastening = Fastening(self)
         self.step_count = 0
 
     def _index_bodies(self) -> None:
@@ -328,7 +333,7 @@ class WorldSim:
         if ent.role in ("robot", "environment"):
             raise EditError(f"{entity_id} is a {ent.role} and cannot be edited")
         for rs in self.robots.values():
-            if rs.holding_any(entity_id):
+            if any(rs.holding_any(eid) for eid in self._fastening.component(entity_id)):
                 raise EditError(f"{entity_id} is held by {rs.entity_id}")
         return ent
 
@@ -369,12 +374,17 @@ class WorldSim:
                        if r.type == "supported-by" and r.b["entity"] == entity_id and r.a["entity"] != entity_id]
             carried = [c for c in carried if self.template.entity(c).rigid.root.value == "free"
                        and all(not rs.holding_any(c) for rs in self.robots.values())]
+            if self._fastening.welds:
+                carried = sorted({member for cid in [entity_id, *carried]
+                                  for member in self._fastening.component(cid)} - {entity_id})
+                for cid in carried:
+                    self._editable(cid)
             saved = {eid: self._entity_pose(eid) for eid in [entity_id, *carried]}
             self._set_root_pose(ent, target)
             for cid in carried:
                 self._set_root_pose(self.template.entity(cid), pose_compose(delta, saved[cid]))
             mujoco.mj_forward(self.model, self.data)
-            problems = self._penetrations({entity_id})
+            problems = self._penetrations(set(saved) if self._fastening.welds else {entity_id})
             if problems:
                 for eid, pose in saved.items():
                     self._set_root_pose(self.template.entity(eid), pose)
@@ -438,7 +448,8 @@ class WorldSim:
             close_renderer(renderer)
         self._renderers = {}
         self.template = scene
-        self.build = build_mjcf(scene, timestep=self.timestep, extra_cameras=[self._overview or self._default_overview()])
+        self.build = build_mjcf(scene, timestep=self.timestep, extra_cameras=[self._overview or self._default_overview()],
+                                appearance=self.appearance, fasteners=self.fasten.mode != "off")
         self.model = self.build.compile()
         self.data = mujoco.MjData(self.model)
         self.build.apply_initial(self.model, self.data)
@@ -455,6 +466,7 @@ class WorldSim:
                 self.data.ctrl[a] = ctrl[name]
         self.data.time = sim_time
         self._index_bodies()
+        self._fastening = Fastening(self)
         self.robots = {e.id: robots.get(e.id, _robot_state(e)) for e in scene.entities if e.role == "robot"}
         for rs in self.robots.values():
             for g in rs.grippers.values():
@@ -478,6 +490,10 @@ class WorldSim:
                 self._drive_handles()
                 mujoco.mj_step(self.model, self.data)
                 self._follow_attached()
+                if self._fastening.slots:
+                    # mj_step leaves position caches at the previous integration point.
+                    mujoco.mj_forward(self.model, self.data)
+                    self._fastening.update()
                 self.step_count += 1
                 for listener in tuple(self._step_listeners):
                     listener()
@@ -742,7 +758,8 @@ class WorldSim:
         in it (the top of a stack) or is a pourable container (carried with what lies in it), or else
         grasp the nearest drawer handle."""
         grip = np.asarray(self.grasp_point(rs.entity_id, gripper_link)["p"])
-        relations = [r for r in self._relations() if r.type == "supported-by"]
+        relations = [r for r in self._relations() if r.type == "supported-by"
+                     and r.a["entity"] not in self._fastening.component(r.b["entity"])]
         supporting = {r.b["entity"] for r in relations if self.template.entity(r.a["entity"]).rigid.root.value == "free"}
         container = {r.a["entity"]: r.b["entity"] for r in relations}
         candidates = []
@@ -751,7 +768,7 @@ class WorldSim:
                 continue
             if ent.id in supporting and not (_is_pourable(ent) and not self._covered(ent.id)):
                 continue
-            if any(other.holding_any(ent.id) for other in self.robots.values()):
+            if any(other.holding_any(eid) for eid in self._fastening.component(ent.id) for other in self.robots.values()):
                 continue
             obb = entity_obb(self.model, self.data, self.build.names[ent.id])
             holder = container.get(ent.id)
@@ -807,8 +824,9 @@ class WorldSim:
         is lifted from; a pourable container keeps colliding, so what lies in it stays in it."""
         if g.attached is None or _is_pourable(self.template.entity(g.attached)):
             return
+        carried = self._fastening.component(g.attached)
         for gid in range(self.model.ngeom):
-            if self._body_entity.get(int(self.model.geom_bodyid[gid])) == g.attached:
+            if self._body_entity.get(int(self.model.geom_bodyid[gid])) in carried and gid not in g.saved_contacts:
                 g.saved_contacts[gid] = (int(self.model.geom_contype[gid]), int(self.model.geom_conaffinity[gid]))
                 self.model.geom_contype[gid] = 0
                 self.model.geom_conaffinity[gid] = 0
@@ -880,8 +898,9 @@ class WorldSim:
         for gid, (ct, ca) in g.saved_contacts.items():
             self.model.geom_contype[gid] = ct
             self.model.geom_conaffinity[gid] = ca
-        jadr = self._free_joint_dof(g.attached)
-        self.data.qvel[jadr : jadr + 6] = 0.0
+        for eid in self._fastening.component(g.attached):
+            jadr = self._free_joint_dof(eid)
+            self.data.qvel[jadr : jadr + 6] = 0.0
         self.events.append({"t": self.time, "type": "grasp/release", "robot": rs.entity_id, "entity": g.attached})
         g.attached, g.rel, g.saved_contacts = None, None, {}
 
@@ -894,20 +913,19 @@ class WorldSim:
                     continue
                 grip = self.gripper_pose(rs.entity_id, gripper_link)
                 target = pose_compose(grip, g.rel)
-                jid = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_JOINT,
-                                        self.build.names[g.attached].root_joints[0])
-                qadr = self.model.jnt_qposadr[jid]
-                self.data.qpos[qadr : qadr + 3] = target["p"]
-                self.data.qpos[qadr + 3 : qadr + 7] = target["q"]
-                dadr = self.model.jnt_dofadr[jid]
                 gid = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY,
                                         self.build.names[rs.entity_id].bodies[gripper_link])
                 vel = np.zeros(6)
                 mujoco.mj_objectVelocity(self.model, self.data, mujoco.mjtObj.mjOBJ_BODY, gid, vel, 0)
                 omega, v_grip = vel[:3], vel[3:]
-                arm = np.asarray(target["p"]) - np.asarray(grip["p"])
-                self.data.qvel[dadr : dadr + 3] = v_grip + np.cross(omega, arm)
-                self.data.qvel[dadr + 3 : dadr + 6] = matrix_from_quat(target["q"]).T @ omega
+                for eid, member_pose in self._fastening.targets(g.attached, target).items():
+                    jid = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_JOINT,
+                                            self.build.names[eid].root_joints[0])
+                    qadr, dadr = self.model.jnt_qposadr[jid], self.model.jnt_dofadr[jid]
+                    self.data.qpos[qadr : qadr + 7] = [*member_pose["p"], *member_pose["q"]]
+                    arm = np.asarray(member_pose["p"]) - np.asarray(grip["p"])
+                    self.data.qvel[dadr : dadr + 3] = v_grip + np.cross(omega, arm)
+                    self.data.qvel[dadr + 3 : dadr + 6] = matrix_from_quat(member_pose["q"]).T @ omega
 
     def _root_body(self, entity_id: str) -> int:
         names = self.build.names[entity_id]
@@ -953,7 +971,8 @@ class WorldSim:
         return float(self.data.qpos[self.model.jnt_qposadr[jid]])
 
     def _relations(self) -> list[Relation]:
-        rels: list[Relation] = []
+        rels: list[Relation] = [Relation(type="attached", a={"entity": a}, b={"entity": b},
+                                          mode="rigid", derived=False) for a, b in self._fastening.welds]
         for rs in self.robots.values():
             for gripper_link, g in rs.grippers.items():
                 if g.attached is not None:

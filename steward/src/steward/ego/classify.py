@@ -33,16 +33,18 @@ SHAPES: dict[str, dict] = {
     "teddy_bear": {"dims": (0.11, 0.105, 0.18), "floor": False, "color": "brown"},
     "scissors": {"dims": (0.16, 0.07, 0.012), "floor": False},
     "toy_airplane": {"dims": (0.22, 0.20, 0.06), "floor": False, "color": "yellow"},
-    "airplane_fuselage": {"dims": (0.18, 0.045, 0.04), "floor": False, "color": "yellow"},
-    "airplane_wing": {"dims": (0.20, 0.055, 0.01), "floor": False, "color": "red"},
+    "airplane_fuselage": {"dims": (0.18, 0.045, 0.065), "bearing_height": 0.04, "extent_slack": 0.015, "floor": False, "color": "yellow"},
+    "airplane_wing": {"dims": (0.20, 0.055, 0.01), "extent_slack": 0.015, "floor": False, "color": "red"},
     "airplane_propeller": {"dims": (0.06, 0.06, 0.01), "floor": False, "color": "orange"},
-    "airplane_landing_gear": {"dims": (0.08, 0.03, 0.025), "floor": False},
-    "car_body": {"dims": (0.16, 0.10, 0.07), "floor": False, "color": "blue"},
+    "airplane_landing_gear": {"dims": (0.08, 0.03, 0.025), "extent_slack": 0.015, "floor": False},
+    "car_body": {"dims": (0.16, 0.101, 0.07), "floor": False, "color": "blue"},
     "car_wheel": {"dims": (0.05, 0.05, 0.016), "floor": False, "color": "dark"},
-    "toy_screw": {"dims": (0.016, 0.016, 0.022), "floor": False},
-    "electric_screwdriver": {"dims": (0.16, 0.035, 0.04), "floor": False, "color": "orange"},
-    "manual": {"dims": (0.24, 0.24, 0.004), "floor": False},
-    "picture": {"dims": (0.24, 0.24, 0.004), "floor": False},
+    # At this scale two depth-voxel boundaries can double the measured diameter.
+    # Tolerate that error in scoring only; completion still uses the physical prior.
+    "toy_screw": {"dims": (0.016, 0.016, 0.022), "extent_slack": 0.020, "floor": False},
+    "electric_screwdriver": {"dims": (0.16, 0.035, 0.04), "extent_slack": 0.015, "floor": False, "color": "orange"},
+    "manual": {"dims": (0.24, 0.24, 0.004), "plan_scale": (0.25, 1.3), "floor": False},
+    "picture": {"dims": (0.24, 0.24, 0.004), "plan_scale": (0.25, 1.3), "floor": False},
     "pistol": {"dims": (0.18, 0.12, 0.03), "floor": False, "color": "dark"},
     "pill_bottle": {"dims": (0.046, 0.046, 0.085), "floor": False},
     "perfume_bottle": {"dims": (0.065, 0.04, 0.10), "floor": False, "color": "pink"},
@@ -95,7 +97,11 @@ def _color_score(rule: str | None, color: np.ndarray, invalid_frac: float,
     if rule == "green":
         return 0.0 if (g > r and g > b and saturation > 0.25) else -3.0
     if rule == "yellow":
-        return 0.0 if (r > 0.45 and g > 0.35 and r >= g > b and saturation > 0.45) else -3.0
+        return 0.0 if (r > 0.45 and g > 0.35 and r >= g > b and g / r >= 0.65 and saturation > 0.45) else -3.0
+    if rule == "orange":
+        return 0.0 if (r > 0.45 and 0.25 < g / r < 0.65 and g > b and saturation > 0.45) else -3.0
+    if rule == "red":
+        return 0.0 if (r > 0.4 and r > 1.5 * max(g, b) and saturation > 0.45) else -3.0
     if rule == "pink":
         return 0.0 if (r > 0.45 and r > b > g and saturation > 0.2) else -2.0
     return 0.0
@@ -245,16 +251,28 @@ def classify(size: np.ndarray, bottom: float, color: np.ndarray, invalid_frac: f
     flat = seen[2] < FLAT and not on_floor
     for name, shape in SHAPES.items():
         proto = np.array(shape["dims"], float)
-        reaches_down = (not bottom_seen or (flat and shape["floor"]))
+        # An occluded base does not make a tabletop object extend to the floor.
+        # Only floor-standing hypotheses can use height above the floor as size.
+        reaches_down = shape["floor"] and (not bottom_seen or flat)
         obs = np.array([seen[0], seen[1], max(seen[2], top)]) if reaches_down else seen
         lo, hi = shape.get("scale", (1.0, 1.0))
         # One scale for the whole object, set by the axis that fills the prototype most: a partial
         # view only shrinks the other axes, which costs little, while a flat wide region cannot pass
         # for a small deep object scaled per axis.
         scale = min(max(float(np.max(obs / proto)), lo), hi)
+        # Printed sheets vary in outline, not proportionally in thickness.
+        # A small print must not lose to scissors just for being below A4 size.
+        if "plan_scale" in shape:
+            plan_lo, plan_hi = shape["plan_scale"]
+            proto[:2] *= min(max(float(np.max(obs[:2] / proto[:2])), plan_lo), plan_hi)
         cost = 0.0
         for k in range(3):
-            r = math.log(obs[k] / (proto[k] * scale))
+            expected = proto[k] * scale
+            # Small kit parts have edges comparable to a depth voxel. Allow an
+            # absolute measurement error before applying the relative oversize cost;
+            # do not inflate the prototype used to complete missing geometry.
+            observed = max(expected, obs[k] - shape.get("extent_slack", 0.0)) if obs[k] > expected else obs[k]
+            r = math.log(observed / expected)
             cost += (r / UNDER[k]) ** 2 if r < 0 else (r / OVER) ** 2
         if bottom_seen and not reaches_down and shape["floor"] != on_floor:
             cost += 6.0
@@ -295,6 +313,19 @@ def shape_over_bottle(fused: dict[str, float], shape: dict[str, float]) -> dict[
         return fused
     winner = max(members, key=members.get)
     return {winner: 1.0}
+
+
+def part_semantics(semantic: dict[str, float], size: np.ndarray) -> dict[str, float]:
+    """A generic airplane label also supports a fuselage when the observed box is slender.
+
+    Both hypotheses still compete through the measured shape and colour. Do not rename
+    every toy airplane: a broad complete airplane keeps only its original evidence.
+    """
+    long, short = max(size[:2]), min(size[:2])
+    if "toy_airplane" not in semantic or long < 2.2 * max(short, 0.004):
+        return semantic
+    return {**semantic, "airplane_fuselage": max(semantic.get("airplane_fuselage", 0.0),
+                                               semantic["toy_airplane"])}
 
 
 def fuse_respecting_color(semantic: dict[str, float], shape: dict[str, float], color: np.ndarray,

@@ -127,6 +127,50 @@ def rects_overlap(a: Box2D, b: Box2D) -> bool:
     return True
 
 
+def rectangle_separation(a: Box2D, b: Box2D) -> float:
+    """Signed SAT gap: negative is penetration; positive is a separating axis."""
+    pa, pb = a.corners(), b.corners()
+    gaps = []
+    for yaw in (a.yaw, b.yaw):
+        for axis in ((math.cos(yaw), math.sin(yaw)), (-math.sin(yaw), math.cos(yaw))):
+            aa, bb = pa @ axis, pb @ axis
+            gaps.append(max(float(bb.min()-aa.max()), float(aa.min()-bb.max())))
+    return max(gaps)
+
+
+def escape_prefix(obstacles, start, yaw, footprint, *, carry_box=None,
+                  turn_radius, margin, max_distance, max_overlap=.05):
+    """Fixed-heading translation out of shallow estimated overlap, never rotate in it.
+
+    Every initially intersecting pair must monotonically separate; other pairs
+    must remain separate. Search forward/backward, also usable by wheeled bases.
+    The returned endpoint has clearance for the full turning envelope.
+    """
+    def bodies(xy):
+        out = [Box2D('base', *xy, yaw, *footprint)]
+        if carry_box is not None:
+            out.append(carry_box(xy))
+        return out
+    initial = [rectangle_separation(a, b) for a in bodies(start) for b in obstacles]
+    if any(d < -max_overlap for d in initial):
+        return None
+    for sign in (-1, 1):
+        previous = initial
+        for distance in np.arange(.01, max_distance+.001, .01):
+            xy = (start[0]+sign*distance*math.cos(yaw), start[1]+sign*distance*math.sin(yaw))
+            gaps = [rectangle_separation(a, b) for a in bodies(xy) for b in obstacles]
+            if any((old < 0 and new < old-1e-8) or (old >= 0 and new <= 0)
+                   for old, new in zip(previous, gaps)):
+                break
+            # No sliding sideways deeper along an existing overlap plateau.
+            if any(first < 0 and new <= first+1e-8 for first, new in zip(initial, gaps)):
+                break
+            if all(b.distance(*xy) >= turn_radius+margin for b in obstacles):
+                return [float(xy[0]), float(xy[1]), float(yaw)]
+            previous = gaps
+    return None
+
+
 @dataclass
 class Grid:
     x0: float

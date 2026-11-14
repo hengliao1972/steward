@@ -24,12 +24,16 @@ import struct
 import xml.etree.ElementTree as ET
 import zlib
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
-import mujoco
 import numpy as np
+
+if TYPE_CHECKING:
+    import mujoco
 
 from steward.math3d import quat_from_matrix, quat_mul, yaw_from_quat
 from steward.scene.finish import finish_kind, finish_png
+from steward.scene.fasteners import active_welds, features, records, weld_pairs
 from steward.scene.schema import Entity, RigidTree, SceneState
 
 _MOUNT_TO_CAMERA = quat_from_matrix(np.array([[0.0, 0.0, -1.0], [-1.0, 0.0, 0.0], [0.0, 1.0, 0.0]]))
@@ -59,12 +63,23 @@ class MjcfBuild:
     """In-memory files the XML references (texture images)."""
     shadows: bool = False
     """Whether the renderer should cast the key light. Flat appearance leaves this off."""
+    fastener_welds: dict[tuple[str, str], str] = field(default_factory=dict)
 
     def compile(self) -> mujoco.MjModel:
-        return mujoco.MjModel.from_xml_string(self.xml, self.assets or None)
+        import mujoco
+
+        model = mujoco.MjModel.from_xml_string(self.xml, self.assets or None)
+        # Optional anti-creep: MuJoCo noslip solver iterations. Off by default (unchanged behaviour).
+        import os
+        noslip = int(os.environ.get("STEWARD_NOSLIP", "0") or 0)
+        if noslip > 0:
+            model.opt.noslip_iterations = noslip
+        return model
 
     def apply_initial(self, model: mujoco.MjModel, data: mujoco.MjData) -> None:
         """Set initial joint positions and hold position actuators at them."""
+        import mujoco
+
         for name, values in self.initial_qpos.items():
             jid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, name)
             adr = model.jnt_qposadr[jid]
@@ -98,9 +113,12 @@ def build_mjcf(
     offscreen: tuple[int, int] = (1280, 960),
     model_name: str = "steward",
     appearance: str = "flat",
+    fasteners: bool = False,
 ) -> MjcfBuild:
     """Compile ``scene``. ``appearance`` ``flat`` is uniform colour and a fill light; ``textured``
-    dresses listed asset colours with a procedural finish and a key light that casts shadows."""
+    dresses listed asset colours with a procedural finish and a key light that casts shadows.
+    ``fasteners`` reserves World-only welds; Ego never consumes World fastener records.
+    XML construction requires no MuJoCo installation; compilation does."""
     if appearance not in ("flat", "textured"):
         raise ValueError(f"appearance must be 'flat' or 'textured', not {appearance!r}")
     root = ET.Element("mujoco", model=model_name)
@@ -139,13 +157,38 @@ def build_mjcf(
         if not isinstance(ent.body, RigidTree):
             raise NotImplementedError(f"entity {ent.id}: deformable bodies are not simulated in Phase 0")
         names[ent.id] = _emit_entity(world, actuators, ent, initial, textures, appearance)
+    fastener_welds = {}
+    if fasteners and scene.mode == "world":
+        active = active_welds(scene)
+        pairs = weld_pairs(features(scene))
+        if pairs:
+            equality = ET.SubElement(root, "equality")
+            for i, pair in enumerate(pairs):
+                a, b = pair
+                name = f"fastener-{i}"
+                fastener_welds[pair] = name
+                rel = active.get(pair, {"p": [0, 0, 0], "q": [1, 0, 0, 0]})
+                ET.SubElement(equality, "weld", name=name,
+                              body1=next(iter(names[a].bodies.values())),
+                              body2=next(iter(names[b].bodies.values())),
+                              active="true" if pair in active else "false",
+                              relpose=_fmt([*rel["p"], *rel["q"]]), solref="0.004 1",
+                              solimp="0.99 0.999 0.001", torquescale="0.1")
+        # The solid marker has no bore: embedded screws retain mass, not collision.
+        for screw in records(scene):
+            bodies = set(names[screw].bodies.values())
+            for body in world.iter("body"):
+                if body.get("name") in bodies:
+                    for geom in body.findall("geom"):
+                        geom.set("contype", "0")
+                        geom.set("conaffinity", "0")
     if len(actuators) == 0:
         root.remove(actuators)
     if len(textures.element):
         root.insert(list(root).index(world), textures.element)
     ET.indent(root)
     return MjcfBuild(xml=ET.tostring(root, encoding="unicode"), names=names, initial_qpos=initial,
-                     assets=textures.files, shadows=appearance == "textured")
+                     assets=textures.files, shadows=appearance == "textured", fastener_welds=fastener_welds)
 
 
 @dataclass

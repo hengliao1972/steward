@@ -35,7 +35,7 @@ export interface JsonObject {
 }
 
 /** Skills the Ego Runtime can predict and run. */
-export type EgoSkill = 'navigate' | 'pick' | 'place' | 'pour' | 'open' | 'close'
+export type EgoSkill = 'regrasp_upright' | 'assemble_onto' | 'fasten_onto' | 'seat_screw' | 'drive_screw' | 'flip_assembly' | 'navigate' | 'pick' | 'place' | 'pour' | 'open' | 'close'
 
 /** The top face of an Ego-State object as the robot camera that sees most of it shows it now. */
 export interface InspectResult {
@@ -252,6 +252,9 @@ export interface SkillJob {
   state: 'running' | 'succeeded' | 'failed' | 'stopped'
   message: string
   log: string[]
+  timing?: JsonObject[]
+  /** Sensor evidence for the requested result; execution success alone does not verify it. */
+  postcondition?: JsonObject
 }
 
 /** Failure reported by an Ego provider, carrying the runtime status when one exists. */

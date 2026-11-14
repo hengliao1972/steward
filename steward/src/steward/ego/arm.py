@@ -38,6 +38,7 @@ class ArmGeometry:
     wrist_roll_max: float
     gripper: str  # the grasp-point link that holds what this arm carries
     wrist_pitch_max: float = 0.0  # forward tilt of the tool; 0: it always points down
+    jaw_opening: float | None = None  # inner separation of modelled parallel jaws
 
 
 
@@ -90,6 +91,12 @@ class Arm:
         The slide has no separate home posture and does not move. Failures propagate to the skill."""
         return False
 
+    def tool_rotation(self, yaw: float, roll: float, pitch: float = 0.0):
+        """Gripper orientation in base coordinates at virtual wrist setpoints."""
+        from steward.math3d import matrix_from_quat, quat_from_axis_angle, quat_mul
+        return matrix_from_quat(quat_mul(quat_from_axis_angle([0, 0, 1], yaw),
+            quat_from_axis_angle([1, 0, 0], roll)))
+
     def reachable(self, lift: float, reach: float, wrist_yaw: float = 0.0, wrist_roll: float = 0.0,
                   wrist_pitch: float = 0.0) -> bool:
         """Whether the arm can hold its grasp point at ``lift`` and ``reach`` turned, tipped and
@@ -134,6 +141,13 @@ def slide_arm(robot_model: dict, reach: tuple[float, float], lift: tuple[float, 
                    if any((a if isinstance(a, str) else a.get("value")) == "grasp-point"
                           for a in link.get("affordances", [])))
 
+    link = next(link for link in tree['links'] if link['id'] == gripper)
+    jaws = [p for p in link.get('geometry', {}).get('visual', [])
+            if p.get('shape') == 'box' and len(p.get('size', [])) == 3]
+    positive = [p['pose']['p'][1]-p['size'][1]/2 for p in jaws if p.get('pose', {}).get('p', [0,0,0])[1] > 0]
+    negative = [p['pose']['p'][1]+p['size'][1]/2 for p in jaws if p.get('pose', {}).get('p', [0,0,0])[1] < 0]
+    opening = min(positive)-max(negative) if positive and negative else None
+
     def wrist_limit(name: str, configured: float) -> float:
         limits = next(j for j in tree["joints"] if j["id"] == name)["limits"]["value"]
         return min(configured, -limits["lo"], limits["hi"])
@@ -141,4 +155,4 @@ def slide_arm(robot_model: dict, reach: tuple[float, float], lift: tuple[float, 
     return Arm(ArmGeometry(tool_offset=lift_joint["origin"]["value"]["p"][0] + mount["origin"]["value"]["p"][0],
                            lateral=0.0, reach_min=reach[0], reach_max=reach[1], lift_min=lift[0], lift_max=lift[1],
                            wrist_yaw_max=wrist_limit("wrist_yaw", wrist_yaw_max),
-                           wrist_roll_max=wrist_limit("wrist_roll", wrist_roll_max), gripper=gripper))
+                           wrist_roll_max=wrist_limit("wrist_roll", wrist_roll_max), gripper=gripper, jaw_opening=opening))

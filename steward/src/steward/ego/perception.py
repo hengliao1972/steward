@@ -245,7 +245,7 @@ def _box_below_picture(depth: np.ndarray, mask: np.ndarray, cam_pose: dict, fovy
 def _raised_cluster_indices(points: np.ndarray, min_points: int) -> list[np.ndarray] | None:
     """Index arrays into ``points`` when a raised region is several objects, not one.
 
-    A region up to 65 cm across splits on one horizontal gap of at least 5 cm. A piece that also
+    A region up to 65 cm across splits recursively on horizontal gaps of at least 5 cm. A piece that also
     contains the table around a shallow bowl keeps only what stands 2 cm above that piece's base.
     A wider raised slab keeps the clusters that stand at least 3.5 cm above the slab. Furniture
     that reaches the floor, and a region wider than 1.2 m, stay whole.
@@ -267,7 +267,7 @@ def _raised_cluster_indices(points: np.ndarray, min_points: int) -> list[np.ndar
 
 
 def _two_compact_sides(points: np.ndarray, min_points: int) -> list[np.ndarray] | None:
-    """Two index arrays when one gap of at least 5 cm divides ``points`` into two small pieces."""
+    """Index arrays separated by gaps of at least 5 cm, splitting recursively."""
     centred = points[:, :2] - points[:, :2].mean(axis=0)
     axis = np.linalg.eigh(centred.T @ centred / len(points))[1][:, 1]
     order = np.argsort(centred @ axis)
@@ -283,6 +283,12 @@ def _two_compact_sides(points: np.ndarray, min_points: int) -> list[np.ndarray] 
     left, right = order[:k + 1], order[k + 1:]
     sides = []
     for idx in (left, right):
+        # Split before peeling support pixels: a row of small parts may itself be
+        # wider than the support-peeling threshold, without containing a support.
+        children = _two_compact_sides(points[idx], min_points)
+        if children is not None:
+            sides.extend(idx[child] for child in children)
+            continue
         core = _object_core(points, idx, min_points)
         if core is None:
             return None

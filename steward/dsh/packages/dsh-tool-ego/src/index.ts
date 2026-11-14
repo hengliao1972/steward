@@ -30,7 +30,7 @@ function text(value: unknown): [{ type: 'text'; text: string }] {
 function receiptView(r: PredictionReceipt): JsonObject {
   const plan = r.plan as Record<string, unknown>
   const brief: JsonObject = {}
-  for (const key of ['target', 'object', 'support', 'spot', 'dock', 'reach', 'lift', 'pathLength', 'wristYaw', 'roll']) {
+  for (const key of ['drive', 'correctOnce', 'method', 'selectedHoleIds', 'stageScrews', 'closeRelease', 'recoverDropped', 'wingRetry', 'part', 'screw', 'body', 'stages', 'stagedPrediction', 'target', 'object', 'support', 'spot', 'dock', 'reach', 'lift', 'pathLength', 'wristYaw', 'roll']) {
     if (key in plan) brief[key] = plan[key]
   }
   const view: JsonObject = {
@@ -42,7 +42,8 @@ function receiptView(r: PredictionReceipt): JsonObject {
 }
 
 function jobView(job: SkillJob): JsonObject {
-  return { job: job.id, skill: job.skill, state: job.state, message: job.message, log: job.log.slice(-8) }
+  return { job: job.id, skill: job.skill, state: job.state, message: job.message, timing: job.timing, log: job.log.slice(-8),
+    ...(job.postcondition === undefined ? {} : { postcondition: job.postcondition }) }
 }
 
 /**
@@ -57,8 +58,11 @@ export function egoTools(ego: EgoService): ToolDefinition[] {
       description: 'Read your current understanding of the world: your own position, what you are holding, the skill '
         + 'in progress, and every object you have perceived with its estimated position, position uncertainty in '
         + 'metres, size, what it rests on, and when you last saw it. Objects you have not seen are absent, and '
-        + 'positions are estimates. screwHoles lists mating screw holes on a part (id and body-frame p in metres; '
-        + 'source observed when a camera saw them, else prior from the category); use them with place alignTo / hole. '
+        + 'positions are estimates. orientation explains whether yawDeg is only a box axis: front/back and near-square '
+        + 'axes may be ambiguous. screwHoles includes source and frame. Outline-compatible priors retain source=prior; '
+        + 'positionsByRegistration lists alternative entity-frame positions (one shared index for all holes on an object). '
+        + 'orientation.holeRegistration explains compatibility and unresolved half turns. Unregistered templates cannot '
+        + 'drive alignment: reobserve dimensions/features or use ordinary placement. A label alone is not registration. '
         + 'appearance says what you remember of an object\'s top face: how long ago you '
         + 'saw it, the share seen, plain / interiorColors (plain true or interiorColors under about 20: a cardboard '
         + 'back; do not use spread alone — lighting makes a plain back look varied) and stale (put down since, look '
@@ -86,7 +90,7 @@ export function egoTools(ego: EgoService): ToolDefinition[] {
     }),
     defineTool({
       name: 'ego_observe',
-      description: 'Report what your two cameras detect right now (categories, distances, which camera, and screwHoles on '
+      description: 'Report what your available cameras detect right now (categories, distances, which camera, and screwHoles on '
         + 'parts that show mating holes). Your world model also updates continuously; use ego_state for the '
         + 'accumulated picture, including screwHoles once a detection has been fused.',
       parameters: {},
@@ -175,13 +179,62 @@ export function egoTools(ego: EgoService): ToolDefinition[] {
       name: 'ego_predict',
       description: 'Predict the consequences of a skill before doing it. Returns a receipt with a risk score, the '
         + 'issues found (for example a target whose position is too uncertain to grasp reliably), and the planned '
-        + 'motion. Skills: "navigate" (needs x, y, optional yaw in radians), "pick" (needs target; a pourable '
+        + 'motion. For a component that must be fastened, prefer "fasten_onto"; use "assemble_onto" for placement only onto a stationary supported body: params {part: ego id, body: ego id, hole?: complete body feature prefix, heldHole?: complete component prefix}. '
+        + 'Start empty-handed. The skill actively obtains close views aimed at the body with independent camera baselines, then freezes the registered body frame. If baselines are insufficient it can use checked single/two-view geometry at low confidence; registrationAttempts reports sample rejection reasons. It picks only the loose part while retaining its pre-grasp heading, fits the complete interfaces, places, retreats and reobserves all released components. '
+        + 'Call predict then skill_run with the receipt and wait for the terminal job before calling again. Reuse the original body id while that body stays stationary. When a released component becomes the next supporting body, use postcondition.releasedReference.entity: its raised frame is propagated from registered grasp geometry and the executed release, explicitly low confidence with assumed settling height. A lost/merged mask is not a new observation. '
+        + 'The staged receipt is admission to the controller: each motion has its own fresh risk check; later stages can fail. Do not repeat a part if postcondition.releaseExecuted is true, even if retreat failed. '
+        + 'postcondition reports registrationEvidence (source, confidence, views), samples with relative poses and planarPassed, plus stableObserved; passed=null means full verification is unresolved, especially directed yaw or uprightness. Release execution is not assembly success or fastening. '
+        + 'orientation.stationaryAssembly exposes frozen registration time, raw observations, released parts and invalidation. Missing/merged detections do not invalidate a stationary frame; a body/support grasp or clear motion does. '
+        + 'Keep the body stationary during each registered placement and do not pick installed components. A wider part can rest on a narrow body when its centre is supported; this does not certify static stability. Use the manual to select the supporting side and complete interface groups, compare relative heights and top/underside features after settling, and report unknown orientation or fastening honestly. Follow the operator/manual task order. Complete required body/tool pose preparation before freezing a frame; a later required pose change invalidates it and requires fresh observations and registration. Never relabel a merged object to bypass refusal. '
+        + 'Other skills: "navigate" (needs x, y, optional yaw in radians), "pick" (needs target; a pourable '
         + 'container is picked with what lies in it once nothing lies on top of it), "place" (needs on: a surface, a '
         + 'part that has screw holes to mate onto, an open drawer to put the object into, or a larger bowl to nest a '
         + 'bowl in; optional offset; or at: [x, y] to put it down on the floor; when the held part and the mate both '
         + 'have screw holes, place seats those holes (on the mate itself, or on a surface with alignTo naming the mate; '
-        + 'optional hole picks which mate hole / family, e.g. "wing" or "wheel_0"; alignHoles: false keeps a manual '
-        + 'offset); optional roll in radians tips it about the arm before release, e.g. π/2 = 90° '
+        + 'optional hole and heldHole select observed or outline-registered feature ids or prefixes; ambiguous fits list '
+        + 'candidate world yaw (radians) and offset in the on-surface frame, ranked against the pre-transport estimated heading when available. '
+        + 'assemble_onto and place perform placement only. fasten_onto {part,body,hole?,heldHole?,drive?} adds deterministic screw seating, optional driving and perceptual verification. The default drive=false selects seating; request drive=true when powered driving is required; it does not read or change environment mode. Follow the task-required component order, tool orientation and body orientation. '
+        + 'Attempt fixation and inspect independent evidence. Missing optional measurements produce warnings and catalogue/grasp estimates; continue feasible stages and report unverified attachment separately from action execution. '
+        + 'seat_screw {part,body,hole,method?} defaults to ordinary pick/place at the just-released component holes, propagated from grasp-relative geometry and release encoders, then checks independent screw geometry. fasten_onto batches the ordinary releases before a shared view. Failed or unknown landings share at most two replays per job; this posterior recovery is independent of correctOnce and wingRetry; method="contact" selects the previous endpoint controller; hole must be one exact body hole id. regrasp_upright {target,on?} stands any elongated tool on a perceived support and regrips it from above. drive_screw {screw} (or {body,hole}) grips a perceived powered driver, turns its estimated tip down, contacts the best screw-head estimate and holds. Missing endpoints use catalogue geometry transported from grasp with encoders. '
+        + 'flip_assembly {body,turnOver?} lifts, checks independent following, places the load and registers its best estimated face. turnOver defaults to true; false performs a lift/set-down following check. Loose components without confirmed screw landings produce an advisory warning before flipping; the pinch targets the body outside their volumes. fasten_onto continues through the first screw attempts, but fails if any requested landing remains failed or unknown after recovery. Read postcondition.confirmedSeatedScrews and requestedScrews; a confirmed landing is independent visual placement evidence, not mechanical attachment. Each starts with an empty hand. '
+        + 'hole/heldHole accept actual feature ids or shared id prefixes from screwHoles; the group metadata string is not itself a selector. '
+        + 'For fitting a multi-hole interface use its complete group/prefix; only seat_screw subsequently selects a single aligned hole. Do not use a single pair to bypass a failed fit: one pair cannot constrain rotation. '
+        + 'Register each part independently: box yaw is the measured box axis, not a shared design heading. Derive the relative axes from the hole '
+        + 'templates and outline registration; do not copy the body yaw or add a guessed quarter turn. Record the clean pre-pick frame before any '
+        + 'parking or regrasp. Grasp heading ranks equivalent fits and cancels transport; it does not prove the initial heading was correct. '
+        + 'Ties use stable template/feature order. After release, retract and move to a clear, different view; require fresh observations of BOTH parts '
+        + 'after releasedAt, not the commanded spot or a merged family box. Compare the relative centre and visible features with each template hypothesis, '
+        + 'including measurement uncertainty. Correct only when new evidence rejects the current hypothesis and supports another: re-identify the loose part, '
+        + 'pick it, predict with the supported candidate yaw/offset, release and remeasure. If a half turn leaves the outline and features identical, '
+        + 'relative centres cannot distinguish it: retain unknown directed yaw and do not alternate blindly. A noncentral feature on the mate does not '
+        + 'make a symmetric held part directional. During planar mating keep the registered body stable and supported, moving only the loose component. '
+        + 'Within the task-required order, keep the next interface visible and reachable. Required changes of body pose are separate operations: '
+        + 'use observed support and orientation, reobserve after the change, and discard the old registration. Do not balance it on a loose component or treat a combined mask as evidence of attachment. '
+        + 'Check the release height and approach clearance as well as XY: alignTo does not plan insertion underneath a body, and a table-height '
+        + 'fallback at its centre may collide with it. Side/underside interfaces need observed geometry in their new pose; the planar skill cannot validate arbitrary 3D insertion. Report an unsupported step rather than guessing. '
+        + 'Check top/side features, vertical extent and support before grasping and releasing; avoid wrist roll/flip during planar mating. '
+        + 'orientation.posture reports a shape alarm, not a measured upright angle: unknown or dimensionsCompatible does not prove uprightness. '
+        + 'Read orientation.stationaryAssembly after assemble_onto: status=frozen retains the pre-addition frame independently of merged masks. For low-level place, orientation.assembly contains envelope corroboration only. '
+        + 'Do not re-register holes against the combined outer axis or relabel the body to bypass a refusal. envelope_observed only corroborates the envelope; '
+        + 'geometry_observed corroborates a separate component box; neither verifies directed yaw, uprightness or fastening. If that evidence is unresolved, '
+        + 'obtain a new clear view. If the body appears tipped or a change is unexplained by the ledger, stop mating. Park the loose part on a separate clear stable surface. '
+        + 'Recover the body only when independent side/top observations establish its tilt and a supported recovery motion is feasible; otherwise '
+        + 'report posture unresolved. Do not use a guessed roll or alignHoles:false on the suspect body to bypass the refusal. '
+        + 'A planar fit does not establish seating or attachment. '
+        + 'Keep a ledger of released parts, their source positions, occupied interfaces and verification evidence. Do not pick an aligned, released and verified '
+        + 'part again. Exclude all installed parts from loose-part selection, including after track renumbering. Before moving a body or support, explicitly '
+        + 'list the completed relations that this would invalidate and a plan to reverify them; a merged perception label is not a mechanical attachment. '
+        + 'After every addition, wait for the running skill to become terminal, retract and observe the stationary body and released component. Complete and verify any task-required fixation before selecting the next loose part. '
+        + 'Use a complete compatible prefix on each side, predict again from the current state, and run that feasible receipt without adding a guessed yaw. '
+        + 'After every addition, recheck earlier relations and the stationary body. Keep released-unverified, verified and invalidated entries distinct. '
+        + 'Before declaring completion, observe all required relations together after settling from more than one clear view; do not proceed to unrelated '
+        + 'work once the requested subset is independently verified. A succeeded release alone never completes a relation. '
+
+        + 'Catalogue group/mates data restrict default interface pairing; explicit hole/heldHole override it. Supply yaw to choose a candidate; '
+        + 'if several offsets remain, also supply offset. Base the choice on camera evidence and verify after release; alignHoles: false keeps a manual '
+        + 'offset). Ordinary planar placement of an interface part also restores its grasp heading when yaw is omitted; explicit yaw overrides it. '
+        + 'Check the predicted spot against the intended feature: ordinary placement can move an occupied spot and provides no precision mating guarantee; '
+        + 'optional roll in radians tips it about the arm before release, e.g. π/2 = 90° '
         + 'to set a flat object down on its side; not together with flip), "pour" (the held object must be pourable; needs on: a surface; tips it over the '
         + 'spot so its contents slide out there in a heap, then holds it upright again, still in the gripper; the spot '
         + 'keeps the contents\' slide from every edge so nothing falls off; count the contents before pouring, since '
@@ -197,19 +250,35 @@ export function egoTools(ego: EgoService): ToolDefinition[] {
         + 'observe, or choose another spot) and predict again. An infeasible receipt lists blockers: entities in the '
         + 'way, whether they can be moved, and parking spots (parkAt) out of the way; clear a movable blocker first '
         + '(pick it, place it at a parking spot), then predict the original skill again. A receipt can be run once '
-        + 'and expires.',
+        + 'and expires. For a yaw-controlled placement, postcondition.orientation reports the independently '
+        + 'observed outer-axis error after release; null directedDeltaDeg means front/back is still unknown. '
+        + 'If unknown, obtain a fresh unobstructed camera view and reread ego_state placementEvidence. '
+        + 'A correction proposal keeps the measured centre: re-identify the object, predict pick, then predict '
+        + 'the supplied place parameters and reobserve. Confirm asymmetric features before accepting a directed orientation.',
       parameters: {
-        skill: { type: 'string', enum: ['navigate', 'pick', 'place', 'pour', 'open', 'close'], required: true, description: 'Skill to predict.' },
+        skill: { type: 'string', enum: ['regrasp_upright', 'assemble_onto', 'fasten_onto', 'seat_screw', 'drive_screw', 'flip_assembly', 'navigate', 'pick', 'place', 'pour', 'open', 'close'], required: true, description: 'Skill to predict.' },
+        turnOver: { type: 'boolean', description: 'flip_assembly: turn the assembly over (default true); false lifts and sets down to inspect following.' },
+        drive: { type: 'boolean', description: 'fasten_onto: false seats screws without using a powered driver; default false; explicitly set true to drive. Action choice only, independent of environment mode.' },
+        correctOnce: { type: 'boolean', description: 'Simple seating: observe and compensate a fresh out-of-capture landing error (default true).' },
+        stageScrews: { type: 'boolean', description: 'Optional pre-staging; default false. Adds extra transfers before component placement.' },
+        closeRelease: { type: 'boolean', description: 'Optional smaller estimated release gap; default false.' },
+        recoverDropped: { type: 'boolean', description: 'Optional bounded re-placement after an observed drop; default false.' },
+        wingRetry: { type: 'boolean', description: 'Optional changed-station component retry and extra measured fastener correction; default false.' },
+        method: { type: 'string', enum: ['simple', 'contact'], description: 'seat_screw/drive_screw/fasten_onto: simple ordinary manipulation (default), or legacy contact controller.' },
+        screw: { type: 'string', description: 'drive_screw: robot-perceived screw id returned by seat_screw.' },
+        part: { type: 'string', description: 'assemble_onto/fasten_onto: perceived loose component id; seat_screw: the already aligned, released component id.' },
+        body: { type: 'string', description: 'assembly/fastening/flip_assembly: supported body id; for a newly released body use releasedReference.entity and inspect its low-confidence frame.' },
         target: { type: 'string', description: 'pick: id of the object to grasp; open/close: id of the drawer.' },
         on: { type: 'string', description: 'place: id of the surface, screw-hole part, open drawer or larger bowl to put the held object on or in; pour: id of the surface.' },
-        offset: { type: 'array', items: { type: 'number' }, description: 'place, pour: [dx, dy] of the spot from the surface centre in the surface frame, metres; without it the free spot nearest you. If something already lies at the requested spot, the free spot nearest it is used instead and the issues say where (the receipt plan.spot holds the spot used). Ignored when screw holes are aligned.' },
+        offset: { type: 'array', items: { type: 'number' }, description: 'place, pour: [dx, dy] of the spot from the surface centre in the surface frame, metres; without it the free spot nearest you. If something already lies at the requested spot, the free spot nearest it is used instead and the issues say where (the receipt plan.spot holds the spot used). During hole alignment, selects a fitted candidate offset within sensor tolerance; incompatible offsets are rejected, never substituted for the hole fit.' },
         alignTo: { type: 'string', description: 'place: id of the part whose screw holes the held part should seat on. Use when on is a table or other surface and the mate is another object on it; omit when on itself is the mate.' },
-        hole: { type: 'string', description: 'place: which screw hole (or family) on the mate to seat, e.g. "wing_0", "wing", "gear", "wheel_2". Without it, multi-hole parts pick the matching family; a single hub picks the nearest mount.' },
+        hole: { type: 'string', description: 'place/assemble_onto/fasten_onto: mate hole id or complete prefix; seat_screw/drive_screw: one exact body hole id. Overrides catalogue interface pairing; ambiguous geometry still returns a default plan and alternatives for post-release verification.' },
+        heldHole: { type: 'string', description: 'place/assemble_onto: observed or registered prior held-object hole id or prefix to use; with no selectors, catalogue-compatible complete groups are tried; without group data all held holes must fit. Explicit selection overrides catalogue pairing.' },
         alignHoles: { type: 'boolean', description: 'place: seat screw holes when both parts have them (default true when on is the mate or alignTo is set). Set false to keep a manual offset.' },
         at: { type: 'array', items: { type: 'number' }, description: 'place on the floor: [x, y] in metres.' },
         x: { type: 'number', description: 'navigate: goal x in metres.' },
         y: { type: 'number', description: 'navigate: goal y in metres.' },
-        yaw: { type: 'number', description: 'navigate: goal heading; place: final heading of the object\'s frame (as ego_state yawDeg and ego_inspect report it), radians; the wrist turns it.' },
+        yaw: { type: 'number', description: 'navigate: goal heading; place: optional absolute world yaw of the held object\'s estimated frame (as ego_state yawDeg reports it), in radians, not a relative wrist turn. A single hole does not constrain yaw: omitting it restores the estimated world heading recorded at grasp, cancelling transport rotation (falls back to the current held heading if no grasp snapshot exists). This preserves initial orientation uncertainty; supply a visually grounded yaw to change orientation. For circular or near-square objects the frame may have no observable physical direction, so this command cannot certify a semantic front. Verify asymmetric features after release. If template holes are unregistered, yaw alone does not register them; use observed features or explicit ordinary placement with alignHoles=false and offset.' },
         flip: { type: 'boolean', description: 'place: turn the held object upside down before setting it down. pick: take it so that it can be turned over later; some arms take it tilted for that, and a place with flip says when the object must be picked again with flip.' },
         roll: { type: 'number', description: 'place: tip the held object about the arm before setting it down, radians (π/2 = 90° onto its side). Not together with flip.' },
         clearance: { type: 'number', description: 'place, pour: least gap in metres kept to objects already on the surface (default 0.015). With an offset, 0 allows contact or overlap (interlocking pieces, stacking): the spot is used exactly as requested, never shifted aside. Screw-hole alignment always uses 0.' },
@@ -217,7 +286,9 @@ export function egoTools(ego: EgoService): ToolDefinition[] {
       output: { schema: JSON_OUTPUT, render: (_a, v) => text(v) },
       async execute(args, exec) {
         const params: JsonObject = {}
-        for (const key of ['target', 'on', 'offset', 'alignTo', 'hole', 'alignHoles', 'at', 'x', 'y', 'yaw', 'flip', 'roll', 'clearance'] as const) {
+        // Tool default is seating; powered driving is an explicit action choice.
+        if (args.skill === 'fasten_onto' && args.drive === undefined) params.drive = false
+        for (const key of ['drive', 'correctOnce', 'method', 'stageScrews', 'closeRelease', 'recoverDropped', 'wingRetry', 'part', 'screw', 'body', 'turnOver', 'target', 'on', 'offset', 'alignTo', 'hole', 'heldHole', 'alignHoles', 'at', 'x', 'y', 'yaw', 'flip', 'roll', 'clearance'] as const) {
           if (args[key] !== undefined) params[key] = args[key]
         }
         return json(receiptView(await ego.predict(args.skill, params, exec.signal)))
@@ -333,7 +404,12 @@ export function egoTools(ego: EgoService): ToolDefinition[] {
     defineTool({
       name: 'skill_run',
       description: 'Execute the plan of a receipt from ego_predict. Waits for the skill to finish unless wait is '
-        + 'false. The robot refuses receipts that are infeasible, expired, already used, or above the risk limit.',
+        + 'false. Staged assembly skills can take tens of minutes: a wait timeout leaves the job running. '
+        + 'Poll its status; keep each run_code wait at most 240 seconds and do not body_stop just because a poll times out. '
+        + 'While such a skill runs the robot may leave the table, change viewpoints and fetch parts on its own; a status that stays running or docked for many minutes is normal. '
+        + 'Interrupting a running assembly skill usually leaves the part placed but not fastened. When it ends, confirm with ego_state that the part is on its body before the next step. '
+        + 'If one sub-goal shows no real progress after three high-level attempts, switch to another sub-goal and return to it later. '
+        + 'The robot refuses receipts that are infeasible, expired, already used, or above the risk limit.',
       parameters: {
         receipt: { type: 'string', required: true, description: 'Receipt id returned by ego_predict.' },
         wait: { type: 'boolean', description: 'Wait for completion (default true).' },

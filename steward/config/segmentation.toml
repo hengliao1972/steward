@@ -30,7 +30,8 @@ crop_depth = 0.5  # share of the region's height kept below its top edge: the to
 drawer_crop_depth = 1.0
 max_crops = 2  # crops per frame, largest region first
 crop_prompts = ["bowl", "cup", "mug", "plate", "wine glass", "teddy bear", "scissors", "toy airplane",
-                "bottle", "box", "puzzle piece", "photo", "picture"]
+                "bottle", "box", "puzzle piece", "photo", "picture",
+                "screw", "wheel", "screwdriver", "toy car", "airplane fuselage", "airplane wing", "landing gear", "instruction sheet"]
 # Asked only inside a drawer crop. A pistol or a perfume is a few pixels inside the open drawer,
 # and naming them on the whole image is what the full pass is not for.
 drawer_prompts = ["pistol", "perfume"]
@@ -79,3 +80,12 @@ fill_min_rise_m = 0.02
 # box or lid: the robot sees the print, and the agent names what carries it.
 "photo" = "picture"
 "picture" = "picture"
+# Parts of a kit laid out for assembly: small, flat, and close together on the table.
+"screw" = "toy_screw"
+"wheel" = "car_wheel"
+"screwdriver" = "electric_screwdriver"
+"toy car" = "car_body"
+"airplane fuselage" = "airplane_fuselage"
+"airplane wing" = "airplane_wing"
+"landing gear" = "airplane_landing_gear"
+"instruction sheet" = "manual"

@@ -368,12 +368,18 @@ class CobotSkills:
                 raise SkillFailed(f"base did not reach the waypoint (error {err:.2f} m)")
 
     def _drive(self, job: Job, path: list, final_yaw: float) -> None:
-        for wx, wy in path:
+        for waypoint in path:
+            wx, wy = waypoint[:2]
             o = self._state()["odometry"]
             if math.hypot(wx - o["x"], wy - o["y"]) < self.config.position_tol:
                 continue
             heading = math.atan2(wy - o["y"], wx - o["x"])
-            self._turn_to(heading)
+            if len(waypoint) == 3:
+                heading = waypoint[2]
+                if abs(wrap_angle(o['yaw']-heading)) > self.config.yaw_tol:
+                    raise SkillFailed('escape heading changed; predict again')
+            else:
+                self._turn_to(heading)
             self._translate_to(wx, wy, heading)
             job.log.append(f"reached waypoint ({wx:.2f}, {wy:.2f})")
         self._turn_to(final_yaw)

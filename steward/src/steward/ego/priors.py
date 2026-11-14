@@ -50,31 +50,49 @@ CATEGORY_PRIORS: dict[str, dict] = {
 
 UNKNOWN_PRIOR = {"role": "object", "root": {"free": 0.5, "fixed": 0.5}, "affordances": [], "fragility": 0.5}
 
-# Screw-hole layouts in each part's body frame (metres). Robot knowledge that matches the toy
-# generators: place uses them to seat mating holes when Ego-State only carries category priors.
+# Category hypotheses in template coordinates (metres), NOT measured entity coordinates.
+# SCREW_HOLE_FRAMES declares the corresponding outline; registration must check observed
+# dimensions and retain both half turns. A category label alone is not registration.
+# group names identify catalogue interfaces; mates lists compatible peer groups.
+# These are design connections, not measured identity or assembly pose. Missing
+# metadata leaves geometric matching available; explicit selectors override it.
 SCREW_HOLES: dict[str, list[dict]] = {
     "airplane_fuselage": [
-        {"id": "wing_0", "p": [0.02, 0.012, 0.038]},
-        {"id": "wing_1", "p": [0.02, -0.012, 0.038]},
-        {"id": "gear_0", "p": [0.0, 0.012, 0.002]},
-        {"id": "gear_1", "p": [0.0, -0.012, 0.002]},
+        {"id": "wing_0", "p": [0.02, 0.012, 0.038], "group": "fuselage.wing", "mates": ('wing.mount',)},
+        {"id": "wing_1", "p": [0.02, -0.012, 0.038], "group": "fuselage.wing", "mates": ('wing.mount',)},
+        {"id": "gear_0", "p": [0.0, 0.012, 0.002], "group": "fuselage.gear", "mates": ('gear.mount',)},
+        {"id": "gear_1", "p": [0.0, -0.012, 0.002], "group": "fuselage.gear", "mates": ('gear.mount',)},
     ],
     "airplane_wing": [
-        {"id": "mount_0", "p": [0.0, 0.012, 0.008]},
-        {"id": "mount_1", "p": [0.0, -0.012, 0.008]},
+        {"id": "mount_0", "p": [0.0, 0.012, 0.008], "group": "wing.mount", "mates": ('fuselage.wing',)},
+        {"id": "mount_1", "p": [0.0, -0.012, 0.008], "group": "wing.mount", "mates": ('fuselage.wing',)},
     ],
     "airplane_propeller": [{"id": "hub", "p": [0.0, 0.0, 0.004]}],
     "airplane_landing_gear": [
-        {"id": "mount_0", "p": [0.0, 0.012, 0.023]},
-        {"id": "mount_1", "p": [0.0, -0.012, 0.023]},
+        {"id": "mount_0", "p": [0.0, 0.012, 0.006], "group": "gear.mount", "mates": ('fuselage.gear',)},
+        {"id": "mount_1", "p": [0.0, -0.012, 0.006], "group": "gear.mount", "mates": ('fuselage.gear',)},
     ],
     "car_body": [
-        {"id": "wheel_0", "p": [0.05, 0.048, 0.01575]},
-        {"id": "wheel_1", "p": [0.05, -0.048, 0.01575]},
-        {"id": "wheel_2", "p": [-0.05, 0.048, 0.01575]},
-        {"id": "wheel_3", "p": [-0.05, -0.048, 0.01575]},
+        {"id": "wheel_0", "p": [0.05, 0.048, 0.01575], "group": "body.wheel0", "mates": ('wheel.hub',)},
+        {"id": "wheel_1", "p": [0.05, -0.048, 0.01575], "group": "body.wheel1", "mates": ('wheel.hub',)},
+        {"id": "wheel_2", "p": [-0.05, 0.048, 0.01575], "group": "body.wheel2", "mates": ('wheel.hub',)},
+        {"id": "wheel_3", "p": [-0.05, -0.048, 0.01575], "group": "body.wheel3", "mates": ('wheel.hub',)},
     ],
-    "car_wheel": [{"id": "hub", "p": [0.0, 0.0, 0.008]}],
+    "car_wheel": [{"id": "hub", "p": [0.0, 0.0, 0.008], "group": "wheel.hub", "mates": ('body.wheel0', 'body.wheel1', 'body.wheel2', 'body.wheel3')}],
+}
+
+# Static template geometry, same catalogue provenance as SCREW_HOLES above and
+# the shape prototypes in classify.py. XY extents use the template's original
+# axes (not sorted long/short). Values describe isolated part outlines from the
+# asset design, never a scene pose, mating target, or desired assembly orientation.
+# All these designs have their XY outline centre at the template origin.
+SCREW_HOLE_FRAMES: dict[str, dict] = {
+    "airplane_fuselage": {"sizeXYM": [0.18, 0.045], "centerXYM": [0.0, 0.0]},
+    "airplane_wing": {"sizeXYM": [0.055, 0.20], "centerXYM": [0.0, 0.0]},
+    "airplane_propeller": {"sizeXYM": [0.06, 0.06], "centerXYM": [0.0, 0.0]},
+    "airplane_landing_gear": {"sizeXYM": [0.03, 0.08], "centerXYM": [0.0, 0.0]},
+    "car_body": {"sizeXYM": [0.16, 0.101], "centerXYM": [0.0, 0.0]},
+    "car_wheel": {"sizeXYM": [0.05, 0.05], "centerXYM": [0.0, 0.0]},
 }
 
 # Words that name a listed category in other terms ("desk" for a table).
