@@ -643,15 +643,22 @@ class StewardHost:
         def clock_wait(q, b):
             """Wait for the world clock (:meth:`WorldSim.wait_until`): ``until`` (or ``seconds`` from now;
             neither: now), ``hold``, ``rank`` and ``pulls``. Answers 504 after ``timeoutS`` wall seconds (default 5)
-            without waking; the caller waits again."""
+            without waking; the caller waits again. A timeout while the world is paused says so: blocking is the
+            right answer to an operator pause, but the caller deserves the reason rather than a bare step number."""
+            sim = self._require_sim()
             until = float(b["until"]) if "until" in b else None
             hold = f"{rid}/{b['hold']}" if b.get("hold") else None
             try:
-                return {"t": self._require_sim().wait_until(until, hold, timeout=float(b.get("timeoutS", 5.0)),
-                                                            rank=int(b.get("rank", 0)), seconds=float(b.get("seconds", 0.0)),
-                                                            pulls=bool(b.get("pulls", True)))}
+                return {"t": sim.wait_until(until, hold, timeout=float(b.get("timeoutS", 5.0)),
+                                            rank=int(b.get("rank", 0)), seconds=float(b.get("seconds", 0.0)),
+                                            pulls=bool(b.get("pulls", True)))}
             except TimeoutError as exc:
-                raise HttpError(504, str(exc)) from exc
+                message = str(exc)
+                if sim.paused:
+                    message += ("; the world is paused" + (
+                        " by a perception fault — acknowledge it (POST /console/alerts/ack)" if self._paused_by_monitor
+                        else "") + ' — resume it (POST /wca/clock {"action": "resume"}) to continue')
+                raise HttpError(504, message) from exc
 
         def telemetry(q, b):
             if not isinstance(b, dict):
