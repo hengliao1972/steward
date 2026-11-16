@@ -653,13 +653,15 @@ class EgoEstimator:
                 self._drop(track, f"no longer seen in {container.id}: fell out while it was carried")
 
     def update_body(self, header: dict) -> None:
-        """Follow the robot's own state (stamp, odometry, joints, gripper) from a sensor header
-        without imaging: between two segmented frames, what the gripper holds moves with it."""
+        """Follow stamp, odometry, joints and single- or dual-gripper feedback without imaging.
+
+        Between segmented frames, a held load follows its holding arm until that arm releases it.
+        """
         self.stamp = float(header["stamp"])
         self.posed = True
         self.odometry = header["odometry"]
         self.joints = header["joints"]
-        self.gripper = header["gripper"]
+        self._read_grippers(header)
         if not self.gripper.get("holding"):
             self._clear_held()
         self._follow_held()

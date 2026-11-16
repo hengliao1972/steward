@@ -34,6 +34,8 @@ open http://127.0.0.1:7400/console   # 浏览器控制台：斜视主视图、�
 
 机器人头部有两台 RGB-D 相机：`head_camera` 看前方，`wide_camera` 是短焦广角相机，看身前台面与夹爪；两台都进入感知，见 [steward.md 13.8](../steward.md#138-机器人本体的双相机)。
 
+在 `phase1-sam` 中，Cobot 任一夹爪的开合、持物或持把手状态变化都可以触发近景相机关键帧。两次分割帧之间，机器人自身状态更新保留双夹爪反馈，持物随夹持它的机械臂移动。
+
 `cobot-magic` 左右臂 joint1～joint6 初始角度均为 0 弧度，夹爪初始张开。`cobot-magic` 夹爪使用简化的掌体、导轨、滑块与手指几何。手指沿工具轴延伸，对称张开时内侧开口最大为 100 mm；抓取点位于两侧指垫之间、指尖后方 5 mm。这些显示几何不代表厂家 CAD，也不提供接触式抓取。
 
 `cobot-magic` 双臂和升降机构的几何采用厂家 `robot.usd` 数据；[本体配置说明](embodiments/cobot-magic.yaml)记录坐标映射、单位假设和保留的仿真近似。运行时资产由 `src/steward/assets/cobot.py` 生成，说明性 YAML 不直接驱动资产。已有场景及原始升降指令的调整见[迁移说明](../docs/upgrade-guide/v0.2.2-alpha.2/cobot-lift-coordinates/guide.zh.md)。

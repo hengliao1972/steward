@@ -528,10 +528,16 @@ class EgoRuntime:
         return elapsed >= cfg.keyframe_min_s and (moved or turned or handled or settled)
 
     def _arm_moved(self, last: dict, frame: dict) -> bool:
-        """Whether the arm or gripper changed enough since ``last`` for a new near-camera keyframe."""
-        grip, was = frame["gripper"], last["gripper"]
-        if grip.get("state") != was.get("state") or bool(grip.get("holding")) != bool(was.get("holding")):
+        """Whether arm motion or any gripper's state changed enough for a near-camera keyframe."""
+        grips = frame.get("grippers") or {"gripper": frame["gripper"]}
+        previous = last.get("grippers") or {"gripper": last["gripper"]}
+        if grips.keys() != previous.keys():
             return True
+        for lid, grip in grips.items():
+            was = previous[lid]
+            if (grip.get("state") != was.get("state")
+                    or any(bool(grip.get(key)) != bool(was.get(key)) for key in ("holding", "holdingHandle"))):
+                return True
         for jid, kind in self._arm_joints.items():
             if jid not in frame["joints"] or jid not in last["joints"]:
                 continue
