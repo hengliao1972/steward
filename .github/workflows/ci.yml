@@ -39,13 +39,14 @@ jobs:
   # serial-linux-selfhosted standby lane in ci-master.yml. Native Windows jobs
   # and their separate DSH_CI_FAILOVER_WINDOWS switch live in ci-windows.yml.
   node-24:
-    if: github.event_name == 'pull_request'
+    if: github.event_name == 'pull_request' && github.repository == 'deepseek-harness/deepseek-harness'
     runs-on: >-
       ${{ vars.DSH_CI_FAILOVER_LINUX == 'blacksmith' && 'blacksmith-8vcpu-ubuntu-2404'
           || vars.DSH_CI_FAILOVER_LINUX == 'selfhosted'
           && github.event.pull_request.user.login != 'dependabot[bot]'
           && fromJSON('["self-hosted", "linux", "x64", "vm-backup"]')
-          || 'dsh-ubuntu-24-04-16core' }}
+          || github.repository == 'deepseek-harness/deepseek-harness' && 'dsh-ubuntu-24-04-16core'
+          || 'ubuntu-24.04' }}
     name: node 24 / static
     env:
       # Shared hosts expose host CPUs, not an isolated allocation.
@@ -106,13 +107,14 @@ jobs:
         run: pnpm run check:ci:static
 
   node-24-coverage:
-    if: github.event_name == 'pull_request'
+    if: github.event_name == 'pull_request' && github.repository == 'deepseek-harness/deepseek-harness'
     runs-on: >-
       ${{ vars.DSH_CI_FAILOVER_LINUX == 'blacksmith' && 'blacksmith-16vcpu-ubuntu-2404'
           || vars.DSH_CI_FAILOVER_LINUX == 'selfhosted'
           && github.event.pull_request.user.login != 'dependabot[bot]'
           && fromJSON('["self-hosted", "linux", "x64", "vm-backup"]')
-          || 'dsh-ubuntu-24-04-16core' }}
+          || github.repository == 'deepseek-harness/deepseek-harness' && 'dsh-ubuntu-24-04-16core'
+          || 'ubuntu-24.04' }}
     name: node 24 / coverage
     env:
       # Shared hosts expose host CPUs, not an isolated allocation.
@@ -207,13 +209,14 @@ jobs:
   # full rerun. The lane compiles package declarations because oxlint's
   # type-aware rules read them.
   node-24-lint:
-    if: github.event_name == 'pull_request'
+    if: github.event_name == 'pull_request' && github.repository == 'deepseek-harness/deepseek-harness'
     runs-on: >-
       ${{ vars.DSH_CI_FAILOVER_LINUX == 'blacksmith' && 'blacksmith-8vcpu-ubuntu-2404'
           || vars.DSH_CI_FAILOVER_LINUX == 'selfhosted'
           && github.event.pull_request.user.login != 'dependabot[bot]'
           && fromJSON('["self-hosted", "linux", "x64", "vm-backup"]')
-          || 'dsh-ubuntu-24-04-16core' }}
+          || github.repository == 'deepseek-harness/deepseek-harness' && 'dsh-ubuntu-24-04-16core'
+          || 'ubuntu-24.04' }}
     name: node 24 / lint
     env:
       # Shared hosts expose host CPUs, not an isolated allocation.
@@ -268,7 +271,7 @@ jobs:
         run: pnpm run check:ci:lint:contracts-ready
 
   node-24-bench:
-    if: github.event_name == 'pull_request'
+    if: github.event_name == 'pull_request' && github.repository == 'deepseek-harness/deepseek-harness'
     runs-on: >-
       ${{ vars.DSH_CI_FAILOVER_LINUX == 'blacksmith' && 'blacksmith-4vcpu-ubuntu-2404'
           || 'ubuntu-24.04' }}
@@ -332,13 +335,14 @@ jobs:
           retention-days: 7
 
   node-24-consumers:
-    if: github.event_name == 'pull_request'
+    if: github.event_name == 'pull_request' && github.repository == 'deepseek-harness/deepseek-harness'
     runs-on: >-
       ${{ vars.DSH_CI_FAILOVER_LINUX == 'blacksmith' && 'blacksmith-16vcpu-ubuntu-2404'
           || vars.DSH_CI_FAILOVER_LINUX == 'selfhosted'
           && github.event.pull_request.user.login != 'dependabot[bot]'
           && fromJSON('["self-hosted", "linux", "x64", "vm-backup"]')
-          || 'dsh-ubuntu-24-04-16core' }}
+          || github.repository == 'deepseek-harness/deepseek-harness' && 'dsh-ubuntu-24-04-16core'
+          || 'ubuntu-24.04' }}
     name: node 24 / snapshots and artifacts
     env:
       # Shared hosts expose host CPUs, not an isolated allocation.
@@ -459,7 +463,7 @@ jobs:
 
 
   node-compat:
-    if: github.event_name == 'pull_request'
+    if: github.event_name == 'pull_request' && github.repository == 'deepseek-harness/deepseek-harness'
     # Under the selfhosted leg this job admits only repository-owned PR code
     # to the persistent shared VM; the blacksmith branch targets ephemeral
     # runners and carries none of those predicates.
@@ -573,12 +577,19 @@ jobs:
           && fromJSON('["self-hosted", "linux", "x64", "vm-backup"]')
           || 'ubuntu-latest' }}
     needs: [node-24, node-24-coverage, node-24-lint, node-24-bench, node-24-consumers, node-compat]
-    if: ${{ !cancelled() && github.event_name == 'pull_request' }}
+    if: ${{ !cancelled() && github.event_name == 'pull_request' && github.repository == 'deepseek-harness/deepseek-harness' }}
     steps:
-      - name: Fail if any needed job did not succeed
-        if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') || contains(needs.*.result, 'skipped')
+      - name: Reject failed or unexpectedly skipped Linux checks
+        if: >-
+          needs['node-24'].result != 'success' ||
+          needs['node-24-coverage'].result != 'success' ||
+          needs['node-24-lint'].result != 'success' ||
+          needs['node-24-consumers'].result != 'success' ||
+          needs['node-compat'].result != 'success' ||
+          (needs['node-24-bench'].result != 'success' &&
+          !(github.repository != 'deepseek-harness/deepseek-harness' && needs['node-24-bench'].result == 'skipped'))
         run: |
           echo "::error::Needed job results: ${{ join(needs.*.result, ', ') }}"
           exit 1
       - name: All checks passed
-        run: echo "All needed jobs succeeded (${{ join(needs.*.result, ', ') }})"
+        run: echo "All required Linux checks passed (${{ join(needs.*.result, ', ') }})"

@@ -18,7 +18,11 @@ providers = ["requests>=2.31"]
 steward = "steward.cli:main"
 
 [dependency-groups]
-dev = ["pytest>=8.0", "requests>=2.31"]
+dev = [
+    "pytest>=8.0",
+    "pytest-cov>=7.1.0",
+    "requests>=2.31",
+]
 
 [build-system]
 requires = ["hatchling"]

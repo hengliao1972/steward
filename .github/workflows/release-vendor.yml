@@ -28,6 +28,8 @@ env:
 
 jobs:
   pack:
+    # Run inherited Harness release checks only in the original repository.
+    if: github.repository == 'deepseek-harness/deepseek-harness'
     name: Pack npm tarballs
     # Persistent runners accept only trusted, credential-free rehearsals.
     runs-on: >-
