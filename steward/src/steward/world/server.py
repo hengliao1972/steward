@@ -660,6 +660,7 @@ class StewardHost:
             return {"accepted": True}
 
         return {
+            ("GET", "/identity"): lambda q, b: {"embodiment": self.embodiments[rid]["id"]},
             ("GET", "/sensors"): lambda q, b: self._require_sim().sensors(rid),
             # The robot's own encoders without a perception sample: an Ego-State view polling
             # them at frame rate must not advance the detector's noise stream.

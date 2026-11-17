@@ -10,7 +10,7 @@ import pytest
 
 from steward.assets.generators import steward_bot
 from steward.ego.arm import Arm
-from steward.ego.esim import Esim
+from steward.ego.esim import Esim, EsimConfig
 from steward.ego.estimator import EgoEstimator, Track
 from steward.ego.planner import entity_box
 from steward.scene.schema import exact
@@ -43,6 +43,80 @@ class OrientationArm(Arm):
     def reachable_path(self, targets, *, start_joints=None):
         self.paths.append((targets, start_joints))
         return super().reachable_path(targets, start_joints=start_joints)
+
+
+@pytest.mark.parametrize('x, enabled', [(2.485, True), (2.50, True), (2.3, True), (2.485, False)])
+def test_drawer_entry_uses_a_tilted_front_grasp_only_under_the_cabinet_top(monkeypatch, x, enabled):
+    covered = x >= 2.45
+    scene, esim = _drawer_entry_scene(monkeypatch, covered, enabled)
+    scene.entity('e:bottle').pose.value['p'][0] = x
+    receipt = esim.predict(scene, 'pick', {'target': 'e:bottle'})
+    assert receipt['feasible'], receipt['issues']
+    plan = receipt['plan']
+    if covered and enabled:
+        assert plan['closePitch'] == .5
+        assert plan['lift'] == pytest.approx(.63)
+        face = min(entity_box(scene.entity('e:cabinet'))[0].corners()[:, 0])
+        grasp = x + plan['graspOffset'][0]
+        assert grasp <= face
+        assert grasp - plan['drawerEntry'] <= face - esim.config.drawer_entry_backoff + 1e-9
+        assert plan['drawerEntrySide'] > 0
+        assert plan['drawerEntry'] > 0 and plan['drawerExit'] > plan['drawerEntry']
+    else:
+        assert 'drawerEntry' not in plan
+
+
+def test_drawer_entry_refuses_a_close_pose_outside_the_arm_workspace(monkeypatch):
+    scene, esim = _drawer_entry_scene(monkeypatch, True, True)
+    reachable = esim.arm.reachable
+    monkeypatch.setattr(esim.arm, 'reachable', lambda *args, **kwargs:
+                        kwargs.get('wrist_pitch') != .5 and reachable(*args, **kwargs))
+    receipt = esim.predict(scene, 'pick', {'target': 'e:bottle'})
+    assert not receipt['feasible']
+    assert 'drawer entry is outside the arm workspace' in '; '.join(receipt['issues'])
+
+
+@pytest.mark.parametrize('robot_xy', [(1., .3), (2.7, -.3)])
+def test_covered_drawer_approach_uses_the_open_front_and_working_height(monkeypatch, robot_xy):
+    scene, esim = _drawer_entry_scene(monkeypatch, True, True)
+    scene.entity(scene.self_id).pose.value['p'][:2] = robot_xy
+    monkeypatch.delattr(esim, '_approach')
+    receipt = esim.predict(scene, 'pick', {'target': 'e:bottle'})
+    assert receipt['feasible'], receipt['issues']
+    plan = receipt['plan']
+    front = esim._front(scene, scene.entity('e:cabinet')).yaw + math.pi
+    assert math.cos(plan['yaw'] - front) >= math.sqrt(.5)
+    assert plan['approachLift'] >= esim.config.drawer_entry_lift
+    assert plan['wristPitch'] == esim.config.drawer_entry_pitch
+
+
+def test_minimum_lift_search_stays_inside_the_requested_grasp_band():
+    model, _ = _scene()
+    arm = Esim(model).arm
+    assert arm.min_lift_for(.3, lo=.6, hi=.7) == .6
+    assert arm.min_lift_for(.3, lo=.8, hi=.7) is None
+
+
+def _drawer_entry_scene(monkeypatch, covered, enabled):
+    model = steward_bot().to_dict()
+    est = EgoEstimator(robot_model=model)
+    est.odometry = {'x': 1., 'y': .3, 'yaw': 0., 'sigma': {'pos': .003, 'yaw': .003}}
+    est.joints = {'lift': .85, 'reach': .4, 'wrist_yaw': 0., 'wrist_roll': 0., 'wrist_pitch': 0.}
+    for eid, category, pos, size in [
+        ('e:cabinet', 'cabinet', [2.7, .6, .4], [.5, .5, .8]),
+        ('e:drawer', 'drawer', [2.4, .6, .65], [.5, .4, .22]),
+        ('e:bottle', 'pill_bottle', [2.485 if covered else 2.3, .46, .595], [.05, .05, .08]),
+    ]:
+        est.tracks[eid] = Track(id=eid, category_counts={category: 5.}, pos=np.array(pos),
+                               var=np.full(3, 1e-4), yaw=0., yaw_var=1e-3, size=np.array(size),
+                               observations=20, first_seen=0., last_seen=0., existence=1.)
+    esim = Esim(model, EsimConfig(drawer_entry_pitch=.5 if enabled else 0.))
+    esim.arm = Arm(dataclasses.replace(esim.arm.geometry, wrist_pitch_max=1.05))
+    # Isolate the close path after navigation has supplied a reachable dock.
+    monkeypatch.setattr(esim, '_approach', lambda *args, **kwargs:
+                        {'path': [[1., .3], [1.3, .15]], 'predock': [1.3, .15], 'dock': [1.65, .15],
+                         'yaw': 0., 'reach': .45, 'wristPitch': .25})
+    return est.to_scene(), esim
 
 
 @pytest.mark.parametrize("case,yaw,roll", [("yaw", 1.1, 0.0), ("roll", 0.0, 0.4)])

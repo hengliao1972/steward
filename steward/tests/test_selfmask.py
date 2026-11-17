@@ -28,19 +28,21 @@ def rig():
         sim.stop()
 
 
-def _robot_pixels(sim: WorldSim, robot_id: str, sensor_id: str) -> np.ndarray:
+def _robot_pixels(sim: WorldSim, robot_id: str, sensor_id: str, entity_id: str | None = None) -> np.ndarray:
     """Ground truth: the pixels whose geom belongs to the robot, from the renderer."""
     import mujoco
 
     _, sensor = sim.camera_pose(robot_id, sensor_id)
     width, height = sensor["intrinsics"]["width"], sensor["intrinsics"]["height"]
     renderer = mujoco.Renderer(sim.model, height, width)
-    renderer.update_scene(sim.data, camera=sim.robot_camera_name(robot_id, sensor_id))
-    renderer.enable_segmentation_rendering()
-    seg = renderer.render().copy()
-    renderer.disable_segmentation_rendering()
+    try:
+        renderer.update_scene(sim.data, camera=sim.robot_camera_name(robot_id, sensor_id))
+        renderer.enable_segmentation_rendering()
+        seg = renderer.render().copy()
+    finally:
+        renderer.close()
     geom = np.where(seg[..., 1] == int(mujoco.mjtObj.mjOBJ_GEOM), seg[..., 0], -1)
-    bodies = [b for b, entity in sim._body_entity.items() if entity == robot_id]
+    bodies = [b for b, entity in sim._body_entity.items() if entity == (entity_id or robot_id)]
     owner = np.isin(sim.model.geom_bodyid[np.clip(geom, 0, None)], bodies)
     return owner & (geom >= 0)
 

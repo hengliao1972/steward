@@ -175,6 +175,16 @@ class RobotLink:
         self.url = url.rstrip("/")
         self.closed = False  # set on shutdown: clock waits stop retrying
 
+    def identity(self) -> dict:
+        """The registered embodiment on this robot port, without scene or object state."""
+        return call("GET", f"{self.url}/identity")
+
+    def require_body(self, body: str) -> None:
+        """Reject a controller whose model does not match the connected robot."""
+        actual = self.identity()["embodiment"]
+        if actual != body:
+            raise ValueError(f"Controller for {body!r} cannot drive {actual!r}; use steward ego --body {actual}")
+
     def sensors(self) -> dict:
         return call("GET", f"{self.url}/sensors")
 
@@ -377,7 +387,8 @@ class EgoRuntime:
                                                       else None),
                                       verify_screw_seat=self._verify_screw_seat,
                                       replan_pick=self._replan_pick,
-                                      replan_insert_place=self._replan_insert_place)
+                                      replan_insert_place=self._replan_insert_place,
+                                      motion_policy=self.arm.motion_policy)
         self._view_scene: tuple[dict, int, float] | None = None  # (ES dict, version, stamp) for the view
         # The belief part of the motion state, recorded under ``_lock`` at each read and around each
         # perception update; :meth:`_motion_state` falls back on it while another thread holds the lock.

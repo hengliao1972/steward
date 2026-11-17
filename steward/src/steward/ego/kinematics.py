@@ -30,7 +30,9 @@ def _link_pose(model: dict, encoders: dict, link: str) -> dict:
         if kind == "prismatic":
             motion = {"p": (np.asarray(axis) * value).tolist(), "q": [1, 0, 0, 0]}
         elif kind == "revolute":
-            motion = {"p": [0, 0, 0], "q": quat_from_axis_angle(axis, value)}
+            rotation = quat_from_axis_angle(axis, value)
+            anchor = np.asarray((joint.get("anchor") or {}).get("value", [0, 0, 0]))
+            motion = {"p": (anchor - matrix_from_quat(rotation) @ anchor).tolist(), "q": rotation}
         else:
             raise ValueError(f"Unsupported robot kinematics joint: {kind}")
         result = pose_compose(result, motion)

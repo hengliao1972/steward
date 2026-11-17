@@ -32,6 +32,7 @@ _SPHERE = int(mujoco.mjtGeom.mjGEOM_SPHERE)
 _CYLINDER = int(mujoco.mjtGeom.mjGEOM_CYLINDER)
 _CAPSULE = int(mujoco.mjtGeom.mjGEOM_CAPSULE)
 _PLANE = int(mujoco.mjtGeom.mjGEOM_PLANE)
+_MESH = int(mujoco.mjtGeom.mjGEOM_MESH)
 
 
 def _geom_half_extents(model: mujoco.MjModel, gid: int) -> np.ndarray:
@@ -66,9 +67,13 @@ def entity_obb(model: mujoco.MjModel, data: mujoco.MjData, names: EntityNames,
     for gid in range(model.ngeom):
         if model.geom_bodyid[gid] not in body_ids:
             continue
-        half = _geom_half_extents(model, gid)
         r_g = data.geom_xmat[gid].reshape(3, 3)
         p_g = data.geom_xpos[gid]
+        if model.geom_type[gid] == _MESH:
+            center, half = model.geom_aabb[gid, :3], model.geom_aabb[gid, 3:]
+            p_g = p_g + r_g @ center
+        else:
+            half = _geom_half_extents(model, gid)
         for sx in (-1, 1):
             for sy in (-1, 1):
                 for sz in (-1, 1):

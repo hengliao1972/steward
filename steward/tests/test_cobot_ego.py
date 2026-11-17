@@ -1,7 +1,8 @@
-"""The Cobot Magic driven by the shared Ego Runtime: the kitchen robot's ESim receipts and skills,
-with one Piper arm and the torso as its planar arm."""
+"""Shared Ego tasks through the simplified and imported Piper bodies' formal runtime assembly,
+with one working arm and the torso providing the planar control interface."""
 
 import dataclasses
+from contextlib import ExitStack
 import math
 import time
 
@@ -9,15 +10,15 @@ import numpy as np
 import pytest
 
 from steward.authoring.service import AuthoringService, build_cobot_workstation
-from steward.ego.bodies import body_arm, robot_model, runtime_config
-from steward.ego.cobot_arm import PiperArm
+from steward.ego.bodies import prepare_body, robot_model
+from steward.ego.piper_arm import PiperArm
 from steward.ego.runtime import EgoRuntime, RobotLink
 from steward.ego.server import ego_api
 from steward.net import call
 from steward.world.server import StewardHost
 
 
-def test_the_planar_arm_reports_what_it_was_commanded_once_the_arm_is_there():
+def test_the_planar_arm_reports_measured_fk_at_the_solved_posture():
     arm = PiperArm(robot_model("cobot-magic"))
     from steward.assets.cobot import HOME, LIFT_HOME
 
@@ -27,37 +28,60 @@ def test_the_planar_arm_reports_what_it_was_commanded_once_the_arm_is_there():
     assert cmd["gripper"] == {"L_link6": "close"}
     solved = cmd["joints"]
     there = arm.virtualize({"joints": solved, "odometry": {"x": 1.0, "y": 2.0, "yaw": 0.5}})["joints"]
-    assert [there[k] for k in ("lift", "reach", "wrist_yaw", "wrist_roll")] == [0.85, 0.30, 0.4, 0.0]
     measured = arm._fk(solved["lift"], [solved[n] for n in arm.names])
+    assert {k: there[k] for k in measured} == pytest.approx(measured, abs=1e-9)
     assert measured["lift"] == pytest.approx(0.85, abs=0.006) and measured["reach"] == pytest.approx(0.30, abs=0.006)
     assert measured["wrist_yaw"] == pytest.approx(0.4, abs=0.03)
     assert arm.geometry.lateral == pytest.approx(0.306), "the left arm works on its own line"
 
 
-@pytest.fixture(scope="module")
-def cobot(tmp_path_factory):
+def _stop_ego(host, runtime):
+    """Drain the test's skill while its world can still advance the robot clock."""
+    runtime.executor.cancel()
+    deadline = time.monotonic() + 60
+    try:
+        job = runtime.executor.current
+        while job is not None and job.finished is None:
+            assert time.monotonic() < deadline, 'skill worker did not stop before world teardown'
+            host.pump(.02)
+    finally:
+        runtime.stop()
+
+
+def _start_ego(stack, root, scenario, body, run_dir):
+    setup = prepare_body(body)
+    host = StewardHost(str(root), scenario=scenario, body=body, speed=math.inf, seed=3, run_dir=run_dir)
+    stack.callback(host.stop)
+    host.start()
+    link = RobotLink(next(iter(host.robot_servers.values())).url)
+    link.require_body(body)
+    runtime = EgoRuntime(link, setup.model, setup.config, arm=setup.arm)
+    stack.callback(_stop_ego, host, runtime)
+    runtime.start()
+    api = ego_api(runtime)
+    stack.callback(api.stop)
+    api.start()
+    deadline = time.monotonic() + 60
+    while not runtime.estimator.posed:
+        assert time.monotonic() < deadline, 'runtime did not receive its initial body pose'
+        host.pump(.02)
+    return host, api.url
+
+
+@pytest.fixture
+def cobot(tmp_path_factory, piper_body):
     root = tmp_path_factory.mktemp("cobot-ego")
     build_cobot_workstation(AuthoringService(root))
-    host = StewardHost(str(root), scenario="cobot-table", speed=math.inf, seed=3,
-                       run_dir=tmp_path_factory.mktemp("run")).start()
-    model = robot_model("cobot-magic")
-    runtime = EgoRuntime(RobotLink(host.robot_servers["w:cobot-1"].url), model, runtime_config("cobot-magic"),
-                         arm=body_arm("cobot-magic", model))
-    runtime.start()
-    api = ego_api(runtime).start()
-    try:
-        yield host, api.url
-    finally:
-        api.stop()
-        runtime.stop()
-        host.stop()
+    with ExitStack() as stack:
+        yield _start_ego(stack, root, 'cobot-table', piper_body, tmp_path_factory.mktemp('run'))
 
 
 def _run(api: str, skill: str, params: dict) -> dict:
-    receipt = call("POST", f"{api}/ego/predict", {"skill": skill, "params": params})
+    # Whole-body trajectory prediction has the same transport budget as _receipt below.
+    receipt = call("POST", f"{api}/ego/predict", {"skill": skill, "params": params}, timeout=120)
     assert receipt["feasible"] and receipt["withinRiskLimit"], receipt["issues"]
     job = call("POST", f"{api}/skill/run", {"receipt": receipt["id"]})
-    return call("POST", f"{api}/skill/wait", {"job": job["id"], "timeoutS": 150}, timeout=160)
+    return _wait_job(api, job)
 
 
 def test_the_twin_picks_a_bowl_and_puts_it_down_elsewhere_on_the_table_through_receipts(cobot):
@@ -143,10 +167,8 @@ def test_the_piper_draws_a_tilted_tool_back_while_its_torso_sinks():
     assert arm.reachable_path([{"lift": 0.95, "reach": 0.62 - 0.05 * k, "wrist_pitch": 0.58} for k in range(8)])
 
 
-def test_the_torso_and_all_six_joints_tip_a_held_box_past_upright_in_one_motion():
-    """Solved for the arm alone at a few torso heights, the tip turned the wrist over at 1.4 rad
-    (joint4 at its limit); solved with the torso, step after step from the last posture, the arm
-    tips the box the 1.9 rad its walls need without a jump."""
+def test_the_torso_and_all_six_joints_follow_a_continuous_tilted_wrist_roll():
+    """A continuous 1.9-radian wrist path; container tilt is checked separately by pour planning."""
     arm = _home_arm()
 
     def tip(roll: float) -> list[dict]:
@@ -214,9 +236,7 @@ def test_the_piper_turns_what_it_holds_over_in_the_air_with_its_tool_tilted_and_
         arm.command({"lift": start_lift - 0.02 * k})
     measured = arm._fk(arm._solved[0], arm._solved[1])
     assert measured["lift"] == pytest.approx(low, abs=0.006)
-    # A π tool-z roll is a half-turn of the wrist: the matrix decomposition into yaw/pitch/roll
-    # folds it back to ~0, so read the commanded virtual joint (what joints_of reports when settled).
-    assert abs(arm._target["wrist_roll"]) == pytest.approx(math.pi, abs=0.05)
+    assert abs(measured['wrist_roll']) == pytest.approx(math.pi, abs=.05)
     assert arm._lowest(arm._solved, edge) >= top + arm.config.turn_link_clearance - 1e-6
 
 
@@ -236,39 +256,42 @@ def _pumped(host: StewardHost, work):
     worker.start()
     while worker.is_alive():
         host.pump(0.02)
+    worker.join()
     if "error" in out:
         raise out["error"]
     return out["value"]
 
 
 @pytest.fixture
-def cobot_in(kitchen_root, tmp_path):
+def cobot_in(kitchen_root, tmp_path, piper_body):
     """The twin in a scenario of the kitchen root (or of ``root``), driven by the shared Ego Runtime."""
-    started = []
+    with ExitStack() as stack:
+        def start(scenario: str, root: str | None = None):
+            host, api = _start_ego(stack, root or kitchen_root, scenario, piper_body, tmp_path)
+            _pumped(host, lambda: _explore(api))
+            return host, api
 
-    def start(scenario: str, root: str | None = None):
-        host = StewardHost(root or kitchen_root, scenario=scenario, body="cobot-magic", speed=math.inf, seed=3,
-                           run_dir=tmp_path).start()
-        rid = next(iter(host.robot_servers))
-        model = robot_model("cobot-magic")
-        runtime = EgoRuntime(RobotLink(host.robot_servers[rid].url), model, runtime_config("cobot-magic"),
-                             arm=body_arm("cobot-magic", model))
-        runtime.start()
-        api = ego_api(runtime).start()
-        started.append((host, runtime, api))
-        _pumped(host, lambda: (time.sleep(2), _explore(api.url)))
-        return host, api.url
+        yield start
 
-    yield start
-    for host, runtime, api in started:
-        api.stop()
-        runtime.stop()
-        host.stop()
+
+def _wait_job(api: str, job: dict, *, simulation_s: float = 120, wall_s: float = 600) -> dict:
+    """Bound physical duration separately from rendering/IK wall time; retain failed job details."""
+    deadline = time.monotonic() + wall_s
+    done = call('GET', f'{api}/skill/status?job={job["id"]}')
+    started = done['started']
+    while time.monotonic() < deadline:
+        done = call('POST', f'{api}/skill/wait', {'job': job['id'], 'timeoutS': 5}, timeout=15)
+        if done['state'] != 'running':
+            return done
+        elapsed = call('GET', f'{api}/ego/state')['stamp'] - started
+        assert elapsed < simulation_s, ('simulation duration exceeded', elapsed, done)
+    raise AssertionError(('wall duration exceeded', wall_s, done))
 
 
 def _explore(api: str) -> None:
     job = call("POST", f"{api}/ego/explore", {})
-    call("POST", f"{api}/skill/wait", {"job": job["id"], "timeoutS": 120}, timeout=130)
+    done = _wait_job(api, job)
+    assert done['state'] == 'succeeded', (done['message'], done['log'])
 
 
 def _receipt(api: str, skill: str, params: dict) -> tuple[dict, dict]:
@@ -276,8 +299,7 @@ def _receipt(api: str, skill: str, params: dict) -> tuple[dict, dict]:
     receipt = call("POST", f"{api}/ego/predict", {"skill": skill, "params": params}, timeout=120)
     assert receipt["feasible"] and receipt["withinRiskLimit"], (skill, receipt["issues"])
     job = call("POST", f"{api}/skill/run", {"receipt": receipt["id"]})
-    # Cobot USD whole-body settles slower than the kitchen slide; 150 s left open/close "running".
-    done = call("POST", f"{api}/skill/wait", {"job": job["id"], "timeoutS": 210}, timeout=220)
+    done = _wait_job(api, job)
     assert done["state"] == "succeeded", (skill, done["message"], done["log"])
     return receipt, done
 
@@ -299,6 +321,10 @@ def test_the_twin_takes_things_out_of_both_drawers_deep_ones_with_its_tool_tilte
                       if o.get("on") == drawer["id"] and o["category"] == wanted]
             assert inside, wanted
             picked, _ = _receipt(api, "pick", {"target": inside[0]["id"]})
+            expected = "w:pill-bottle" if cabinet_side else "w:pistol"
+            robot = next(iter(host.sim.robots.values()))
+            assert any(grip.attached == expected for grip in robot.grippers.values()), \
+                f"the requested {wanted} must be held before placement"
             plans[wanted] = (picked["plan"], drawer["position"][2] + drawer["sizeM"][2] / 2)
             _receipt(api, "place", {"on": drawer["id"]})
             _receipt(api, "close", {"target": drawer["id"]})
@@ -328,9 +354,7 @@ def _puzzle_ids(api: str) -> tuple[dict, dict, dict]:
 
 @pytest.fixture
 def deep_table_root(tmp_path_factory, monkeypatch):
-    """A root with the 4 × 4 puzzle on a table deep enough for the twin to pour on (2.4 × 1.15 m): on
-    the half-size table the pour spot lies near the middle, 0.32 m out, where the Piper's wrist mostly
-    tips the box short of the 1.7 rad its walls need."""
+    """The 4 × 4 puzzle on a 2.4 × 1.15 m table with room for the predicted spill footprint."""
     from steward.authoring import service
 
     monkeypatch.setitem(service.PUZZLES, "dog", dataclasses.replace(service.PUZZLES["dog"], table_m=(2.4, 1.15), box_from_end_m=0.15))
@@ -340,9 +364,7 @@ def deep_table_root(tmp_path_factory, monkeypatch):
 
 
 def test_the_twin_takes_the_puzzle_box_by_its_rim_tilted_and_pours_it_out_onto_the_table(cobot_in, deep_table_root):
-    """The box's walls hold the pieces until it is past upright. The Piper's wrist alone turns over
-    at 1.4 rad; the torso and all six joints solved together tip it 1.9 rad in one motion, the
-    torso rising as its lower edge swings down."""
+    """Rim grasp, predicted container tilt, and actual pieces leaving the box onto the table."""
     host, api = cobot_in("puzzle-dog", deep_table_root)
 
     def pour() -> tuple[dict, dict]:
@@ -356,9 +378,7 @@ def test_the_twin_takes_the_puzzle_box_by_its_rim_tilted_and_pours_it_out_onto_t
     taken, poured = _pumped(host, pour)
     assert taken["wristPitch"] == pytest.approx(1.05), "a container to be poured is taken with the wrist tilted most"
     assert taken["graspDz"] > 0, "on its rim, above its centre"
-    # The pour tries both tip directions and keeps the farthest continuous one; either sign past
-    # pour_roll_min empties the box (walls need about 1.7 rad).
-    assert abs(poured["roll"]) >= 1.7
+    assert poured["containerTilt"] >= 1.7
     world = host.sim.world_state()
     rest = {r["a"]["entity"]: r["b"]["entity"] for r in world["relations"] if r["type"] == "supported-by"}
     pieces = {e["id"]: e["pose"]["value"]["p"] for e in world["entities"] if e["id"].startswith("w:piece")}
@@ -389,6 +409,7 @@ def test_the_twin_turns_a_puzzle_piece_over_in_the_air_and_sets_it_down_on_the_t
                                                timeout=120)["feasible"])
         picked, _ = _receipt(api, "pick", {"target": piece["id"], "flip": True})
         held = next(r["a"]["entity"] for r in host.sim.world_state()["relations"] if r["type"] == "attached")
+        assert held.startswith('w:piece-'), f'expected a puzzle piece, grasped {held}'
         before = up(held)
         placed, _ = _receipt(api, "place", {"on": table["id"], "offset": [-0.2, 0.1], "flip": True})
         time.sleep(1)
@@ -405,7 +426,7 @@ def test_the_twin_turns_a_puzzle_piece_over_in_the_air_and_sets_it_down_on_the_t
 def test_the_twin_lifts_puzzle_pieces_out_of_the_box_over_its_wall(cobot_in):
     host, api = cobot_in("puzzle-cat")
 
-    def lift_one() -> dict:
+    def lift_one() -> tuple[dict, str]:
         lid, box, table = _puzzle_ids(api)
         _receipt(api, "pick", {"target": lid["id"]})
         _receipt(api, "place", {"on": table["id"]})
@@ -416,9 +437,14 @@ def test_the_twin_lifts_puzzle_pieces_out_of_the_box_over_its_wall(cobot_in):
                                                {"skill": "pick", "params": {"target": o["id"]}},
                                                timeout=120)["feasible"])
         lifted, _ = _receipt(api, "pick", {"target": piece["id"]})
+        held = next(r['a']['entity'] for r in host.sim.world_state()['relations'] if r['type'] == 'attached')
+        assert held.startswith('w:piece-'), f'expected a puzzle piece, grasped {held}'
         _receipt(api, "place", {"on": table["id"], "offset": [0.15, 0.1]})
-        return lifted["plan"]
+        return lifted["plan"], held
 
-    lifted = _pumped(host, lift_one)
+    lifted, held = _pumped(host, lift_one)
     assert lifted["approachLift"] > lifted["lift"], "a piece comes out over the box wall"
-    assert not [r for r in host.sim.world_state()["relations"] if r["type"] == "attached"]
+    world = host.sim.world_state()
+    assert not [r for r in world['relations'] if r['type'] == 'attached']
+    supports = {r['a']['entity']: r['b']['entity'] for r in world['relations'] if r['type'] == 'supported-by'}
+    assert supports.get(held) == 'w:table-1', f'{held} must land on the table: {supports.get(held)}'

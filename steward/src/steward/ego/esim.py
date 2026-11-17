@@ -79,6 +79,12 @@ class EsimConfig:
     # Least wrist pitch ``require_tilt`` accepts: a shallower ridge (≈0.12 rad) often has a nearby
     # mink posture the servo holds instead, so the virtual pitch never settles on the plan.
     min_require_tilt: float = 0.35
+    drawer_entry_pitch: float = 0.0  # positive enables tilted entry for contents under a cabinet top
+    drawer_entry_lift: float = 0.85  # resolved from the body's working-height workspace
+    # TCP height offset and distances toward the drawer opening, in metres.
+    drawer_grasp_raise: float = 0.035
+    drawer_grasp_backoff: float = 0.035
+    drawer_entry_backoff: float = 0.05  # TCP clearance outside the cabinet front before descent
     # Carrying or placing a most-tilted grasp below this height sits in the short-reach USD hole.
     tilted_carry_floor: float = 0.95
     receipt_ttl: float = 60.0
@@ -122,7 +128,7 @@ class EsimConfig:
     pour_roll: float = 1.9
     # Tipped less, the contents stay in the container: its walls hold them until it is past upright
     # (measured with the puzzle box: at 1.5 rad nothing came out, at 1.75 everything did).
-    pour_roll_min: float = 1.7
+    pour_roll_min: float = 1.7  # minimum container tilt from world upright, not wrist rotation
     pour_check_step: float = 0.1  # roll step at which the whole tip is checked for a continuous motion
     wrist_check_step: float = 0.1  # angular step for a held object's approach, including yaw and roll
     lift_check_step: float = 0.05  # height step at which a grasp's way down and up is checked likewise
@@ -167,9 +173,25 @@ class Esim:
         tree = robot_model["body"]
         base = next(link for link in tree["links"] if link["id"] == "base")
         base_geom = base["geometry"]["collision"][0]
-        bx, by, bz = base_geom["size"]
-        self.half_x, self.half_y = bx / 2, by / 2
-        self.ground_clearance = base_geom["pose"]["p"][2] - bz / 2
+        if base_geom["kind"] == "primitive" and base_geom["shape"] == "box":
+            bx, by, bz = base_geom["size"]
+            self.half_x, self.half_y = bx / 2, by / 2
+            self.ground_clearance = base_geom["pose"]["p"][2] - bz / 2
+        else:
+            from steward.scene.mjcf import build_mjcf
+            from steward.scene.extent import entity_obb
+            import mujoco
+
+            entity = Entity.from_dict(robot_model)
+            entity.pose.value = {"p": [0, 0, 0], "q": [1, 0, 0, 0]}
+            build = build_mjcf(SceneState(mode="world", entities=[entity]))
+            model = build.compile()
+            data = mujoco.MjData(model)
+            build.apply_initial(model, data)
+            bounds = entity_obb(model, data, build.names[entity.id], ["base"])
+            self.half_x = abs(bounds.center[0]) + bounds.size[0] / 2
+            self.half_y = abs(bounds.center[1]) + bounds.size[1] / 2
+            self.ground_clearance = bounds.center[2] - bounds.size[2] / 2
         self.radius = math.hypot(self.half_x, self.half_y)
         cfg = self.config
         self.arm = arm or slide_arm(robot_model, (cfg.reach_min, cfg.reach_max), (cfg.lift_min, cfg.lift_max),
@@ -1234,6 +1256,10 @@ class Esim:
         in_drawer = support is not None and support.category.value == "drawer"
         approach_over = None
         for xy, offset in (assembly_points or self._grasp_points(es, target, tp)):
+            furniture = (self._drawer_furniture(es, support)
+                         if in_drawer and most > 0 and self.config.drawer_entry_pitch > 0 else None)
+            covered = furniture is not None and entity_box(furniture)[0].contains(*xy)
+            candidate_pitches = [self.config.drawer_entry_pitch] if covered else pitches
             base_z = rim_z if any(offset) else tp[2]
             if in_drawer and most > 0:
                 # Prefer the object's true height so a short bottle is not grasped in air; raise only
@@ -1255,6 +1281,8 @@ class Esim:
                     # height (≈0.63 m) has no USD IK at 0.50 m. Lower to ``z`` after untilting.
                     high = min(self.lift_max, max(z, floor, over or 0.0, 0.70))
                     high = min(high, max(floor + 0.20, z + 0.25, 0.70))
+                    if covered:
+                        high = max(high, self.config.drawer_entry_lift)
                     carry_for = min(carry_lift, max(floor + 0.20, z + 0.20, high))
                     path_lifts = [high, max(carry_for, high)]
                     dock_h = high
@@ -1265,6 +1293,16 @@ class Esim:
                     dock_h = z
                 try:
                     heading_issue = driver_heading or (self._edge_facing(offset) if self.config.edge_grasp_first else None)
+                    if covered:
+                        front_heading = self._front(es, furniture).yaw + math.pi
+                        base_heading_issue = heading_issue
+
+                        def heading_issue(yaw):
+                            reason = base_heading_issue(yaw) if base_heading_issue is not None else None
+                            if reason is not None:
+                                return reason
+                            return (None if math.cos(yaw - front_heading) >= math.sqrt(.5)
+                                    else "drawer entry requires the open front")
                     screw = self._affords(target, "screwdriver") and driver_heading is None
                     heading_cost = self._screwdriver_side_cost(target) if screw else None
                     # Screwdriver: refuse clear end-on docks first so a longer broadside wins; only if
@@ -1277,27 +1315,52 @@ class Esim:
                                 es, anchor, xy, dock_h, {target.id},
                                 load=target if carried_low else None,
                                 heading_issue=prefer_side, heading_cost=heading_cost,
-                                pitches=pitches, wrist=grasp_wrist, lifts=path_lifts,
+                                pitches=candidate_pitches, wrist=grasp_wrist, lifts=path_lifts,
                                 require_tilt=in_drawer and most > 0)
                         except PredictionError:
                             approach = self._approach(
                                 es, anchor, xy, dock_h, {target.id},
                                 load=target if carried_low else None,
                                 heading_issue=heading_issue, heading_cost=heading_cost,
-                                pitches=pitches, wrist=grasp_wrist, lifts=path_lifts,
+                                pitches=candidate_pitches, wrist=grasp_wrist, lifts=path_lifts,
                                 require_tilt=in_drawer and most > 0)
                     else:
                         approach = self._approach(
                             es, anchor, xy, dock_h, {target.id},
                             load=target if carried_low else None,
                             heading_issue=heading_issue, heading_cost=heading_cost,
-                            pitches=pitches, wrist=grasp_wrist, lifts=path_lifts,
+                            pitches=candidate_pitches, wrist=grasp_wrist, lifts=path_lifts,
                             require_tilt=in_drawer and most > 0)
                 except PredictionError as exc:
                     first = first or exc
                     continue
                 if in_drawer and most > 0:
                     reach_m = float(approach["reach"])
+                    if covered:
+                        c, s = math.cos(approach["yaw"]), math.sin(approach["yaw"])
+                        heading = np.array([c, s])
+                        face = float(np.min(entity_box(furniture)[0].corners() @ heading))
+                        depth = float(np.dot(xy, heading)) - face
+                        back = max(self.config.drawer_grasp_backoff, depth)
+                        close_reach = reach_m - back
+                        pitch = self.config.drawer_entry_pitch
+                        ceiling = target_top + self.config.edge_grasp_depth
+                        entry_floor = self.arm.min_lift_for(close_reach, pitch, lo=base_z, hi=ceiling)
+                        if entry_floor is None or not self.arm.reachable(high, close_reach, wrist_pitch=pitch):
+                            first = first or PredictionError("the tilted drawer entry is outside the arm workspace")
+                            approach = None
+                            continue
+                        z = max(entry_floor, min(base_z + self.config.drawer_grasp_raise, ceiling))
+                        offset = (-back * c, -back * s)
+                        entry = max(0.0, self.config.drawer_entry_backoff + depth - back)
+                        side = float(np.dot(np.array(support.pose.value["p"][:2]) - np.array(xy), [-s, c]))
+                        approach.update(closePitch=pitch, closeReach=close_reach, wristPitch=pitch,
+                                        drawerEntry=entry, drawerEntrySide=side,
+                                        drawerExit=max(entry, depth + max(target_box.hx, target_box.hy)
+                                                       + self.config.edge_grasp_depth))
+                        carry_lift = max(carry_for, high)
+                        grasp_offset, grasp_z, approach_over = offset, z, high
+                        break
                     # Prefer tool-down at the object's true height: raising the close into air
                     # grasps nothing, and a mild tilt at the dock reach often packs joint2.
                     # Execution creeps in after untilting when closePitch is ~0.
@@ -2342,7 +2405,16 @@ class Esim:
         # Prefer the approach pitch (``pitch_for`` after an untilted carry) over live FK: pour docks
         # past ~0.50 m must keep that tilt through the tip, not re-plan tool-down.
         pitch = float(approach.get("wristPitch") or self._held_pitch(es)[0] or 0.0)
-        yaw = self._arm_joints(es).get("wrist_yaw", 0.0)
+        current = self._arm_joints(es)
+        yaw = current.get("wrist_yaw", 0.0)
+        _, _, base_yaw = self._robot_xy_yaw(es)
+        current_tool = matrix_from_quat(quat_from_yaw(base_yaw)) @ self.arm.tool_rotation(
+            yaw, current.get("wrist_roll", 0.0), current.get("wrist_pitch", 0.0))
+        held_up = current_tool.T @ matrix_from_quat(held.pose.value["q"])[:, 2]
+
+        def container_tilt(r: float) -> float:
+            up = self.arm.tool_rotation(yaw, r, pitch) @ held_up
+            return math.acos(float(np.clip(up[2], -1.0, 1.0)))
 
         def tips(r: float) -> bool:
             steps = max(1, math.ceil(abs(r) / self.config.pour_check_step))
@@ -2356,28 +2428,30 @@ class Esim:
                                            + [at(steps, rise * j / rises) for j in range(1, rises + 1)]
                                            + [at(k, rise) for k in range(steps - 1, -1, -1)])
 
-        def farthest(r: float, least: float) -> float:
-            """The largest tip, from ``r`` toward upright in 0.1 rad steps, that :func:`tips`; below ``least`` if none."""
+        def farthest(r: float) -> float | None:
+            """The largest requested wrist roll with sufficient container tilt and a continuous path."""
             sign = 1.0 if r >= 0 else -1.0
-            while abs(r) >= least and not tips(r):
+            while abs(r) >= 0.3:
+                if container_tilt(r) >= self.config.pour_roll_min and tips(r):
+                    return r
                 r -= sign * 0.1
-            return r
+            return None
 
         wanted = roll
         for side in ([roll] if "roll" in params else [roll, -roll]):
-            roll = farthest(side, self.config.pour_roll_min)
-            if abs(roll) >= self.config.pour_roll_min:
+            roll = farthest(side)
+            if roll is not None:
                 break
-        if abs(roll) < self.config.pour_roll_min:
-            most = max((farthest(side, 0.3) for side in ([wanted] if "roll" in params else [wanted, -wanted])), key=abs)
-            raise PredictionError(f"holding {held.id} {approach['reach']:.2f} m out, the wrist tips it at most "
-                                  f"{max(abs(most), 0.0):.1f} rad without turning over, short of the "
-                                  f"{self.config.pour_roll_min:.1f} rad its walls need to let the contents out; pour "
-                                  "onto a spot nearer the edge, or take the contents out one by one")
+        if roll is None:
+            raise PredictionError(f"holding {held.id} {approach['reach']:.2f} m out, no continuous pour path "
+                                  f"within wrist roll {abs(wanted):.2f} rad tilts the container at least "
+                                  f"{self.config.pour_roll_min:.2f} rad from upright; change the grasp or pour "
+                                  "spot, or take the contents out one by one")
         if abs(abs(wanted) - abs(roll)) > 1e-6:
-            issues.append(f"the wrist tips {held.id} only {roll:.1f} rad here (asked {wanted:.1f})")
+            issues.append(f"pouring {held.id} uses wrist roll {roll:.1f} rad here (asked {wanted:.1f})")
         plan = {**approach, "object": held.id, "support": support.id, "spot": list(spot), "gripSpot": list(grip),
-                "lift": height, "roll": roll, "pivot": pivot, "pourS": self.config.pour_hold_s, "rise": rise,
+                "lift": height, "roll": roll, "containerTilt": container_tilt(roll),
+                "pivot": pivot, "pourS": self.config.pour_hold_s, "rise": rise,
                 "gentle": True}
         # Deep pour docks must keep the planned tilt through tip and exit (tool-down tops out ~0.50 m).
         if abs(pitch) >= 1e-3:

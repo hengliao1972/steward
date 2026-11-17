@@ -1,0 +1,3972 @@
+{
+  "id": "w:template",
+  "role": "robot",
+  "category": {
+    "value": "usd-robot"
+  },
+  "pose": {
+    "value": {
+      "p": [
+        0.0,
+        0.0,
+        0.3241813256173628
+      ],
+      "q": [
+        1.0,
+        0.0,
+        0.0,
+        0.0
+      ]
+    }
+  },
+  "body": {
+    "kind": "rigid",
+    "root": {
+      "value": "fixed"
+    },
+    "links": [
+      {
+        "id": "/Root/split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/dummy_base_x",
+        "name": "dummy_base_x",
+        "geometry": {
+          "visual": [
+            {
+              "kind": "primitive",
+              "shape": "box",
+              "size": [
+                0.02,
+                0.02,
+                0.02
+              ],
+              "pose": {
+                "p": [
+                  0,
+                  0,
+                  0
+                ],
+                "q": [
+                  1,
+                  0,
+                  0,
+                  0
+                ]
+              }
+            }
+          ]
+        },
+        "inertial": {
+          "value": {
+            "mass": 0.001,
+            "diagonal": [
+              1e-06,
+              1e-06,
+              1e-06
+            ],
+            "pose": {
+              "p": [
+                0.0,
+                0.0,
+                0.0
+              ],
+              "q": [
+                1.0,
+                0.0,
+                0.0,
+                0.0
+              ]
+            }
+          }
+        },
+        "affordances": []
+      },
+      {
+        "id": "/Root/split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/dummy_base_y",
+        "name": "dummy_base_y",
+        "geometry": {
+          "visual": [
+            {
+              "kind": "primitive",
+              "shape": "box",
+              "size": [
+                0.02,
+                0.02,
+                0.02
+              ],
+              "pose": {
+                "p": [
+                  0,
+                  0,
+                  0
+                ],
+                "q": [
+                  1,
+                  0,
+                  0,
+                  0
+                ]
+              }
+            }
+          ]
+        },
+        "inertial": {
+          "value": {
+            "mass": 0.001,
+            "diagonal": [
+              1e-06,
+              1e-06,
+              1e-06
+            ],
+            "pose": {
+              "p": [
+                0.0,
+                0.0,
+                0.0
+              ],
+              "q": [
+                1.0,
+                0.0,
+                0.0,
+                0.0
+              ]
+            }
+          }
+        },
+        "affordances": []
+      },
+      {
+        "id": "/Root/split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/dummy_base_rotate",
+        "name": "dummy_base_rotate",
+        "geometry": {
+          "visual": [
+            {
+              "kind": "primitive",
+              "shape": "box",
+              "size": [
+                0.02,
+                0.02,
+                0.02
+              ],
+              "pose": {
+                "p": [
+                  0,
+                  0,
+                  0
+                ],
+                "q": [
+                  1,
+                  0,
+                  0,
+                  0
+                ]
+              }
+            }
+          ]
+        },
+        "inertial": {
+          "value": {
+            "mass": 0.001,
+            "diagonal": [
+              1e-06,
+              1e-06,
+              1e-06
+            ],
+            "pose": {
+              "p": [
+                0.0,
+                0.0,
+                0.0
+              ],
+              "q": [
+                1.0,
+                0.0,
+                0.0,
+                0.0
+              ]
+            }
+          }
+        },
+        "affordances": []
+      },
+      {
+        "id": "/Root/split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/base_link",
+        "name": "base_link",
+        "geometry": {
+          "visual": [
+            {
+              "kind": "primitive",
+              "shape": "box",
+              "size": [
+                0.02,
+                0.02,
+                0.02
+              ],
+              "pose": {
+                "p": [
+                  0,
+                  0,
+                  0
+                ],
+                "q": [
+                  1,
+                  0,
+                  0,
+                  0
+                ]
+              }
+            }
+          ]
+        },
+        "inertial": {
+          "value": {
+            "mass": 10.0,
+            "diagonal": [
+              0.27326604508856234,
+              0.5484547879011583,
+              0.6935941789228245
+            ],
+            "pose": {
+              "p": [
+                -0.019286447220663833,
+                1.0713871253786866e-06,
+                -0.10077933340933426
+              ],
+              "q": [
+                1.0,
+                0.0,
+                0.0,
+                0.0
+              ]
+            }
+          }
+        },
+        "affordances": []
+      },
+      {
+        "id": "/Root/split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/box_link",
+        "name": "box_link",
+        "geometry": {
+          "visual": [
+            {
+              "kind": "primitive",
+              "shape": "box",
+              "size": [
+                0.02,
+                0.02,
+                0.02
+              ],
+              "pose": {
+                "p": [
+                  0,
+                  0,
+                  0
+                ],
+                "q": [
+                  1,
+                  0,
+                  0,
+                  0
+                ]
+              }
+            }
+          ]
+        },
+        "inertial": {
+          "value": {
+            "mass": 27.26099967956543,
+            "diagonal": [
+              5.490963331372899,
+              7.371784550500436,
+              3.451417142346793
+            ],
+            "pose": {
+              "p": [
+                0.044526500144094705,
+                0.004174238807087338,
+                0.5988202263394443
+              ],
+              "q": [
+                1.0,
+                0.0,
+                0.0,
+                0.0
+              ]
+            }
+          }
+        },
+        "affordances": []
+      },
+      {
+        "id": "/Root/split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/front_camera_link",
+        "name": "front_camera_link",
+        "geometry": {
+          "visual": [
+            {
+              "kind": "primitive",
+              "shape": "box",
+              "size": [
+                0.02,
+                0.02,
+                0.02
+              ],
+              "pose": {
+                "p": [
+                  0,
+                  0,
+                  0
+                ],
+                "q": [
+                  1,
+                  0,
+                  0,
+                  0
+                ]
+              }
+            }
+          ]
+        },
+        "inertial": {
+          "value": {
+            "mass": 0.020052999258041382,
+            "diagonal": [
+              1.6185754669862008e-05,
+              5.823266675439609e-06,
+              1.3357904358613193e-05
+            ],
+            "pose": {
+              "p": [
+                -0.009507568546129608,
+                0.0006908272599058553,
+                -0.006629955110974788
+              ],
+              "q": [
+                1.0,
+                0.0,
+                0.0,
+                0.0
+              ]
+            }
+          }
+        },
+        "affordances": []
+      },
+      {
+        "id": "/Root/split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/lidar_link",
+        "name": "lidar_link",
+        "geometry": {
+          "visual": [
+            {
+              "kind": "primitive",
+              "shape": "box",
+              "size": [
+                0.02,
+                0.02,
+                0.02
+              ],
+              "pose": {
+                "p": [
+                  0,
+                  0,
+                  0
+                ],
+                "q": [
+                  1,
+                  0,
+                  0,
+                  0
+                ]
+              }
+            }
+          ]
+        },
+        "inertial": {
+          "value": {
+            "mass": 0.04861700162291527,
+            "diagonal": [
+              4.910744448436325e-05,
+              6.177422592293411e-05,
+              5.0902489164534814e-05
+            ],
+            "pose": {
+              "p": [
+                -0.00044424648393968924,
+                -0.001079073522980152,
+                0.022897884613233437
+              ],
+              "q": [
+                1.0,
+                0.0,
+                0.0,
+                0.0
+              ]
+            }
+          }
+        },
+        "affordances": []
+      },
+      {
+        "id": "/Root/split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/lifting_link",
+        "name": "lifting_link",
+        "geometry": {
+          "visual": [
+            {
+              "kind": "primitive",
+              "shape": "box",
+              "size": [
+                0.02,
+                0.02,
+                0.02
+              ],
+              "pose": {
+                "p": [
+                  0,
+                  0,
+                  0
+                ],
+                "q": [
+                  1,
+                  0,
+                  0,
+                  0
+                ]
+              }
+            }
+          ]
+        },
+        "inertial": {
+          "value": {
+            "mass": 0.470660001039505,
+            "diagonal": [
+              0.030536217592215087,
+              0.019361347815374665,
+              0.028621377225868862
+            ],
+            "pose": {
+              "p": [
+                0.06558692409460042,
+                -2.2409946671325676e-05,
+                0.15144006914422176
+              ],
+              "q": [
+                1.0,
+                0.0,
+                0.0,
+                0.0
+              ]
+            }
+          }
+        },
+        "affordances": []
+      },
+      {
+        "id": "/Root/split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/top_camera_link",
+        "name": "top_camera_link",
+        "geometry": {
+          "visual": [
+            {
+              "kind": "primitive",
+              "shape": "box",
+              "size": [
+                0.02,
+                0.02,
+                0.02
+              ],
+              "pose": {
+                "p": [
+                  0,
+                  0,
+                  0
+                ],
+                "q": [
+                  1,
+                  0,
+                  0,
+                  0
+                ]
+              }
+            }
+          ]
+        },
+        "inertial": {
+          "value": {
+            "mass": 0.020052999258041382,
+            "diagonal": [
+              1.5152883419093627e-05,
+              1.0579920580969063e-05,
+              1.8844347996026765e-05
+            ],
+            "pose": {
+              "p": [
+                -0.03046854929943666,
+                -0.0008712197031937943,
+                -0.006315966401905553
+              ],
+              "q": [
+                1.0,
+                0.0,
+                0.0,
+                0.0
+              ]
+            }
+          }
+        },
+        "affordances": []
+      },
+      {
+        "id": "/Root/split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/fr/arm_base",
+        "name": "arm_base",
+        "geometry": {
+          "visual": [
+            {
+              "kind": "primitive",
+              "shape": "box",
+              "size": [
+                0.02,
+                0.02,
+                0.02
+              ],
+              "pose": {
+                "p": [
+                  0,
+                  0,
+                  0
+                ],
+                "q": [
+                  1,
+                  0,
+                  0,
+                  0
+                ]
+              }
+            }
+          ]
+        },
+        "inertial": {
+          "value": {
+            "mass": 0.16254857182502747,
+            "diagonal": [
+              0.0006308658775256089,
+              0.0019815971212460534,
+              0.0015350995322977975
+            ],
+            "pose": {
+              "p": [
+                0.0898142139175223,
+                -0.0011392943067169564,
+                0.028790504175466934
+              ],
+              "q": [
+                1.0,
+                0.0,
+                0.0,
+                0.0
+              ]
+            }
+          }
+        },
+        "affordances": []
+      },
+      {
+        "id": "/Root/split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/fr/link1",
+        "name": "link1",
+        "geometry": {
+          "visual": [
+            {
+              "kind": "primitive",
+              "shape": "box",
+              "size": [
+                0.02,
+                0.02,
+                0.02
+              ],
+              "pose": {
+                "p": [
+                  0,
+                  0,
+                  0
+                ],
+                "q": [
+                  1,
+                  0,
+                  0,
+                  0
+                ]
+              }
+            }
+          ]
+        },
+        "inertial": {
+          "value": {
+            "mass": 0.09786799550056458,
+            "diagonal": [
+              0.00012986761211182982,
+              0.0007941200644394901,
+              0.0007873454567339089
+            ],
+            "pose": {
+              "p": [
+                0.10461181574231607,
+                0.0007460353827547644,
+                -0.004925982644598398
+              ],
+              "q": [
+                1.0,
+                0.0,
+                0.0,
+                0.0
+              ]
+            }
+          }
+        },
+        "affordances": []
+      },
+      {
+        "id": "/Root/split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/fr/link2",
+        "name": "link2",
+        "geometry": {
+          "visual": [
+            {
+              "kind": "primitive",
+              "shape": "box",
+              "size": [
+                0.02,
+                0.02,
+                0.02
+              ],
+              "pose": {
+                "p": [
+                  0,
+                  0,
+                  0
+                ],
+                "q": [
+                  1,
+                  0,
+                  0,
+                  0
+                ]
+              }
+            }
+          ]
+        },
+        "inertial": {
+          "value": {
+            "mass": 0.2908889353275299,
+            "diagonal": [
+              0.0006390192318572002,
+              0.0033059520387306884,
+              0.0034530989363048743
+            ],
+            "pose": {
+              "p": [
+                0.14298775931081298,
+                5.2169132617463365e-06,
+                0.0001656452552702692
+              ],
+              "q": [
+                1.0,
+                0.0,
+                0.0,
+                0.0
+              ]
+            }
+          }
+        },
+        "affordances": []
+      },
+      {
+        "id": "/Root/split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/fr/link3",
+        "name": "link3",
+        "geometry": {
+          "visual": [
+            {
+              "kind": "primitive",
+              "shape": "box",
+              "size": [
+                0.02,
+                0.02,
+                0.02
+              ],
+              "pose": {
+                "p": [
+                  0,
+                  0,
+                  0
+                ],
+                "q": [
+                  1,
+                  0,
+                  0,
+                  0
+                ]
+              }
+            }
+          ]
+        },
+        "inertial": {
+          "value": {
+            "mass": 0.29084768891334534,
+            "diagonal": [
+              0.0006490224016096496,
+              0.00180951338367025,
+              0.0020981092950339932
+            ],
+            "pose": {
+              "p": [
+                -0.08883399499704994,
+                0.028882786343810377,
+                0.00047735385150903323
+              ],
+              "q": [
+                1.0,
+                0.0,
+                0.0,
+                0.0
+              ]
+            }
+          }
+        },
+        "affordances": []
+      },
+      {
+        "id": "/Root/split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/fr/link4",
+        "name": "link4",
+        "geometry": {
+          "visual": [
+            {
+              "kind": "primitive",
+              "shape": "box",
+              "size": [
+                0.02,
+                0.02,
+                0.02
+              ],
+              "pose": {
+                "p": [
+                  0,
+                  0,
+                  0
+                ],
+                "q": [
+                  1,
+                  0,
+                  0,
+                  0
+                ]
+              }
+            }
+          ]
+        },
+        "inertial": {
+          "value": {
+            "mass": 0.12708735466003418,
+            "diagonal": [
+              0.00047785001907341173,
+              0.001108728543380713,
+              0.0010320818790500385
+            ],
+            "pose": {
+              "p": [
+                0.09999328783389697,
+                -0.008560442008622576,
+                0.002661219412499194
+              ],
+              "q": [
+                1.0,
+                0.0,
+                0.0,
+                0.0
+              ]
+            }
+          }
+        },
+        "affordances": []
+      },
+      {
+        "id": "/Root/split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/fr/link5",
+        "name": "link5",
+        "geometry": {
+          "visual": [
+            {
+              "kind": "primitive",
+              "shape": "box",
+              "size": [
+                0.02,
+                0.02,
+                0.02
+              ],
+              "pose": {
+                "p": [
+                  0,
+                  0,
+                  0
+                ],
+                "q": [
+                  1,
+                  0,
+                  0,
+                  0
+                ]
+              }
+            }
+          ]
+        },
+        "inertial": {
+          "value": {
+            "mass": 0.14471124112606049,
+            "diagonal": [
+              0.0006831469285972977,
+              0.0012575780333096461,
+              0.0012728715018013018
+            ],
+            "pose": {
+              "p": [
+                0.10172573097114126,
+                0.030023649774660828,
+                0.002822095489700027
+              ],
+              "q": [
+                1.0,
+                0.0,
+                0.0,
+                0.0
+              ]
+            }
+          }
+        },
+        "affordances": []
+      },
+      {
+        "id": "/Root/split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/fr/link6",
+        "name": "link6",
+        "geometry": {
+          "visual": [
+            {
+              "kind": "primitive",
+              "shape": "box",
+              "size": [
+                0.02,
+                0.02,
+                0.02
+              ],
+              "pose": {
+                "p": [
+                  0,
+                  0,
+                  0
+                ],
+                "q": [
+                  1,
+                  0,
+                  0,
+                  0
+                ]
+              }
+            }
+          ]
+        },
+        "inertial": {
+          "value": {
+            "mass": 0.19518713653087616,
+            "diagonal": [
+              0.0007760872228801793,
+              0.0008364359249921634,
+              0.001152315466745041
+            ],
+            "pose": {
+              "p": [
+                0.007203839710757304,
+                0.02620748693702099,
+                0.029351192472396176
+              ],
+              "q": [
+                1.0,
+                0.0,
+                0.0,
+                0.0
+              ]
+            }
+          }
+        },
+        "affordances": []
+      },
+      {
+        "id": "/Root/split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/fr/link7",
+        "name": "link7",
+        "geometry": {
+          "visual": [
+            {
+              "kind": "primitive",
+              "shape": "box",
+              "size": [
+                0.02,
+                0.02,
+                0.02
+              ],
+              "pose": {
+                "p": [
+                  0,
+                  0,
+                  0
+                ],
+                "q": [
+                  1,
+                  0,
+                  0,
+                  0
+                ]
+              }
+            }
+          ]
+        },
+        "inertial": {
+          "value": {
+            "mass": 0.026482291519641876,
+            "diagonal": [
+              2.1685490179501847e-05,
+              1.1535408122136803e-05,
+              2.5786541710685075e-05
+            ],
+            "pose": {
+              "p": [
+                8.673517165063392e-05,
+                -0.03724922676530923,
+                -0.008014437639972056
+              ],
+              "q": [
+                1.0,
+                0.0,
+                0.0,
+                0.0
+              ]
+            }
+          }
+        },
+        "affordances": []
+      },
+      {
+        "id": "/Root/split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/fr/link8",
+        "name": "link8",
+        "geometry": {
+          "visual": [
+            {
+              "kind": "primitive",
+              "shape": "box",
+              "size": [
+                0.02,
+                0.02,
+                0.02
+              ],
+              "pose": {
+                "p": [
+                  0,
+                  0,
+                  0
+                ],
+                "q": [
+                  1,
+                  0,
+                  0,
+                  0
+                ]
+              }
+            }
+          ]
+        },
+        "inertial": {
+          "value": {
+            "mass": 0.026482202112674713,
+            "diagonal": [
+              3.634328439251398e-05,
+              0.00017691044972641213,
+              0.0001896134112186841
+            ],
+            "pose": {
+              "p": [
+                0.10489018451530774,
+                0.029651330185601125,
+                -0.022410380757530567
+              ],
+              "q": [
+                1.0,
+                0.0,
+                0.0,
+                0.0
+              ]
+            }
+          }
+        },
+        "affordances": []
+      },
+      {
+        "id": "/Root/split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/fl/arm_base",
+        "name": "arm_base",
+        "geometry": {
+          "visual": [
+            {
+              "kind": "primitive",
+              "shape": "box",
+              "size": [
+                0.02,
+                0.02,
+                0.02
+              ],
+              "pose": {
+                "p": [
+                  0,
+                  0,
+                  0
+                ],
+                "q": [
+                  1,
+                  0,
+                  0,
+                  0
+                ]
+              }
+            }
+          ]
+        },
+        "inertial": {
+          "value": {
+            "mass": 0.16254857182502747,
+            "diagonal": [
+              0.0006308658775256089,
+              0.0019815971212460534,
+              0.0015350995322977975
+            ],
+            "pose": {
+              "p": [
+                0.0898142139175223,
+                -0.0011392943067169564,
+                0.028790504175466934
+              ],
+              "q": [
+                1.0,
+                0.0,
+                0.0,
+                0.0
+              ]
+            }
+          }
+        },
+        "affordances": []
+      },
+      {
+        "id": "/Root/split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/fl/link1",
+        "name": "link1",
+        "geometry": {
+          "visual": [
+            {
+              "kind": "primitive",
+              "shape": "box",
+              "size": [
+                0.02,
+                0.02,
+                0.02
+              ],
+              "pose": {
+                "p": [
+                  0,
+                  0,
+                  0
+                ],
+                "q": [
+                  1,
+                  0,
+                  0,
+                  0
+                ]
+              }
+            }
+          ]
+        },
+        "inertial": {
+          "value": {
+            "mass": 0.09786799550056458,
+            "diagonal": [
+              0.00012986761211182982,
+              0.0007941200644394901,
+              0.0007873454567339089
+            ],
+            "pose": {
+              "p": [
+                0.10461181574231596,
+                0.0007460353827547644,
+                -0.004925982644598398
+              ],
+              "q": [
+                1.0,
+                0.0,
+                0.0,
+                0.0
+              ]
+            }
+          }
+        },
+        "affordances": []
+      },
+      {
+        "id": "/Root/split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/fl/link2",
+        "name": "link2",
+        "geometry": {
+          "visual": [
+            {
+              "kind": "primitive",
+              "shape": "box",
+              "size": [
+                0.02,
+                0.02,
+                0.02
+              ],
+              "pose": {
+                "p": [
+                  0,
+                  0,
+                  0
+                ],
+                "q": [
+                  1,
+                  0,
+                  0,
+                  0
+                ]
+              }
+            }
+          ]
+        },
+        "inertial": {
+          "value": {
+            "mass": 0.2908889353275299,
+            "diagonal": [
+              0.0006390192318572002,
+              0.0033059520387306884,
+              0.0034530989363048743
+            ],
+            "pose": {
+              "p": [
+                0.14298775931081303,
+                5.2169132617463365e-06,
+                0.0001656452552702692
+              ],
+              "q": [
+                1.0,
+                0.0,
+                0.0,
+                0.0
+              ]
+            }
+          }
+        },
+        "affordances": []
+      },
+      {
+        "id": "/Root/split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/fl/link3",
+        "name": "link3",
+        "geometry": {
+          "visual": [
+            {
+              "kind": "primitive",
+              "shape": "box",
+              "size": [
+                0.02,
+                0.02,
+                0.02
+              ],
+              "pose": {
+                "p": [
+                  0,
+                  0,
+                  0
+                ],
+                "q": [
+                  1,
+                  0,
+                  0,
+                  0
+                ]
+              }
+            }
+          ]
+        },
+        "inertial": {
+          "value": {
+            "mass": 0.29084768891334534,
+            "diagonal": [
+              0.0006490224016096496,
+              0.00180951338367025,
+              0.0020981092950339932
+            ],
+            "pose": {
+              "p": [
+                -0.08883399499704994,
+                0.028882786343810377,
+                0.00047735385150903323
+              ],
+              "q": [
+                1.0,
+                0.0,
+                0.0,
+                0.0
+              ]
+            }
+          }
+        },
+        "affordances": []
+      },
+      {
+        "id": "/Root/split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/fl/link4",
+        "name": "link4",
+        "geometry": {
+          "visual": [
+            {
+              "kind": "primitive",
+              "shape": "box",
+              "size": [
+                0.02,
+                0.02,
+                0.02
+              ],
+              "pose": {
+                "p": [
+                  0,
+                  0,
+                  0
+                ],
+                "q": [
+                  1,
+                  0,
+                  0,
+                  0
+                ]
+              }
+            }
+          ]
+        },
+        "inertial": {
+          "value": {
+            "mass": 0.12708735466003418,
+            "diagonal": [
+              0.00047785001907341173,
+              0.001108728543380713,
+              0.0010320818790500385
+            ],
+            "pose": {
+              "p": [
+                0.09999328783389719,
+                -0.008560442008622576,
+                0.0026612194124992494
+              ],
+              "q": [
+                1.0,
+                0.0,
+                0.0,
+                0.0
+              ]
+            }
+          }
+        },
+        "affordances": []
+      },
+      {
+        "id": "/Root/split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/fl/link5",
+        "name": "link5",
+        "geometry": {
+          "visual": [
+            {
+              "kind": "primitive",
+              "shape": "box",
+              "size": [
+                0.02,
+                0.02,
+                0.02
+              ],
+              "pose": {
+                "p": [
+                  0,
+                  0,
+                  0
+                ],
+                "q": [
+                  1,
+                  0,
+                  0,
+                  0
+                ]
+              }
+            }
+          ]
+        },
+        "inertial": {
+          "value": {
+            "mass": 0.14471124112606049,
+            "diagonal": [
+              0.0006831469285972977,
+              0.0012575780333096461,
+              0.0012728715018013018
+            ],
+            "pose": {
+              "p": [
+                0.10172573097114126,
+                0.030023649774660773,
+                0.0028220954896999717
+              ],
+              "q": [
+                1.0,
+                0.0,
+                0.0,
+                0.0
+              ]
+            }
+          }
+        },
+        "affordances": []
+      },
+      {
+        "id": "/Root/split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/fl/link6",
+        "name": "link6",
+        "geometry": {
+          "visual": [
+            {
+              "kind": "primitive",
+              "shape": "box",
+              "size": [
+                0.02,
+                0.02,
+                0.02
+              ],
+              "pose": {
+                "p": [
+                  0,
+                  0,
+                  0
+                ],
+                "q": [
+                  1,
+                  0,
+                  0,
+                  0
+                ]
+              }
+            }
+          ]
+        },
+        "inertial": {
+          "value": {
+            "mass": 0.19518713653087616,
+            "diagonal": [
+              0.0007760872228801793,
+              0.0008364359249921634,
+              0.001152315466745041
+            ],
+            "pose": {
+              "p": [
+                0.007203839710757359,
+                0.02620748693702099,
+                0.029351192472396065
+              ],
+              "q": [
+                1.0,
+                0.0,
+                0.0,
+                0.0
+              ]
+            }
+          }
+        },
+        "affordances": []
+      },
+      {
+        "id": "/Root/split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/fl/link7",
+        "name": "link7",
+        "geometry": {
+          "visual": [
+            {
+              "kind": "primitive",
+              "shape": "box",
+              "size": [
+                0.02,
+                0.02,
+                0.02
+              ],
+              "pose": {
+                "p": [
+                  0,
+                  0,
+                  0
+                ],
+                "q": [
+                  1,
+                  0,
+                  0,
+                  0
+                ]
+              }
+            }
+          ]
+        },
+        "inertial": {
+          "value": {
+            "mass": 0.026482291519641876,
+            "diagonal": [
+              2.1685490179501806e-05,
+              1.1535408122136803e-05,
+              2.5786541710685034e-05
+            ],
+            "pose": {
+              "p": [
+                8.673517165041188e-05,
+                -0.03724922676530906,
+                -0.008014437639972056
+              ],
+              "q": [
+                1.0,
+                0.0,
+                0.0,
+                0.0
+              ]
+            }
+          }
+        },
+        "affordances": []
+      },
+      {
+        "id": "/Root/split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/fl/link8",
+        "name": "link8",
+        "geometry": {
+          "visual": [
+            {
+              "kind": "primitive",
+              "shape": "box",
+              "size": [
+                0.02,
+                0.02,
+                0.02
+              ],
+              "pose": {
+                "p": [
+                  0,
+                  0,
+                  0
+                ],
+                "q": [
+                  1,
+                  0,
+                  0,
+                  0
+                ]
+              }
+            }
+          ]
+        },
+        "inertial": {
+          "value": {
+            "mass": 0.026482202112674713,
+            "diagonal": [
+              3.634328439251398e-05,
+              0.0001769104497264124,
+              0.00018961341121868436
+            ],
+            "pose": {
+              "p": [
+                0.10489018451530763,
+                0.029651330185601125,
+                -0.022410380757530567
+              ],
+              "q": [
+                1.0,
+                0.0,
+                0.0,
+                0.0
+              ]
+            }
+          }
+        },
+        "affordances": []
+      },
+      {
+        "id": "/Root/split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/fl_steering_wheel_link",
+        "name": "fl_steering_wheel_link",
+        "geometry": {
+          "visual": [
+            {
+              "kind": "primitive",
+              "shape": "box",
+              "size": [
+                0.02,
+                0.02,
+                0.02
+              ],
+              "pose": {
+                "p": [
+                  0,
+                  0,
+                  0
+                ],
+                "q": [
+                  1,
+                  0,
+                  0,
+                  0
+                ]
+              }
+            }
+          ]
+        },
+        "inertial": {
+          "value": {
+            "mass": 1.0,
+            "diagonal": [
+              0.004911192028814689,
+              0.0033220721757978586,
+              0.0024161628964594513
+            ],
+            "pose": {
+              "p": [
+                -8.407459304110576e-05,
+                0.023195442887891167,
+                -0.03926002746527367
+              ],
+              "q": [
+                1.0,
+                0.0,
+                0.0,
+                0.0
+              ]
+            }
+          }
+        },
+        "affordances": []
+      },
+      {
+        "id": "/Root/split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/fl_wheel_link",
+        "name": "fl_wheel_link",
+        "geometry": {
+          "visual": [
+            {
+              "kind": "primitive",
+              "shape": "box",
+              "size": [
+                0.02,
+                0.02,
+                0.02
+              ],
+              "pose": {
+                "p": [
+                  0,
+                  0,
+                  0
+                ],
+                "q": [
+                  1,
+                  0,
+                  0,
+                  0
+                ]
+              }
+            }
+          ]
+        },
+        "inertial": {
+          "value": {
+            "mass": 8.0,
+            "diagonal": [
+              0.04143472268511746,
+              0.057670640916552475,
+              0.041424188937492924
+            ],
+            "pose": {
+              "p": [
+                -4.657133355352727e-05,
+                -0.018877754264949337,
+                -0.00018506315129496187
+              ],
+              "q": [
+                1.0,
+                0.0,
+                0.0,
+                0.0
+              ]
+            }
+          }
+        },
+        "affordances": []
+      },
+      {
+        "id": "/Root/split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/fr_steering_wheel_link",
+        "name": "fr_steering_wheel_link",
+        "geometry": {
+          "visual": [
+            {
+              "kind": "primitive",
+              "shape": "box",
+              "size": [
+                0.02,
+                0.02,
+                0.02
+              ],
+              "pose": {
+                "p": [
+                  0,
+                  0,
+                  0
+                ],
+                "q": [
+                  1,
+                  0,
+                  0,
+                  0
+                ]
+              }
+            }
+          ]
+        },
+        "inertial": {
+          "value": {
+            "mass": 1.0,
+            "diagonal": [
+              0.0049083094690903824,
+              0.0033194187533382383,
+              0.002410626914275524
+            ],
+            "pose": {
+              "p": [
+                0.00012101434397897293,
+                -0.02319527958079332,
+                -0.03926002746527367
+              ],
+              "q": [
+                1.0,
+                0.0,
+                0.0,
+                0.0
+              ]
+            }
+          }
+        },
+        "affordances": []
+      },
+      {
+        "id": "/Root/split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/fr_wheel_link",
+        "name": "fr_wheel_link",
+        "geometry": {
+          "visual": [
+            {
+              "kind": "primitive",
+              "shape": "box",
+              "size": [
+                0.02,
+                0.02,
+                0.02
+              ],
+              "pose": {
+                "p": [
+                  0,
+                  0,
+                  0
+                ],
+                "q": [
+                  1,
+                  0,
+                  0,
+                  0
+                ]
+              }
+            }
+          ]
+        },
+        "inertial": {
+          "value": {
+            "mass": 8.0,
+            "diagonal": [
+              0.04151305395869951,
+              0.05770947435450661,
+              0.04146368677312083
+            ],
+            "pose": {
+              "p": [
+                -4.657133355352033e-05,
+                0.018878025047928414,
+                0.000154999185698744
+              ],
+              "q": [
+                1.0,
+                0.0,
+                0.0,
+                0.0
+              ]
+            }
+          }
+        },
+        "affordances": []
+      },
+      {
+        "id": "/Root/split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/rl_steering_wheel_link",
+        "name": "rl_steering_wheel_link",
+        "geometry": {
+          "visual": [
+            {
+              "kind": "primitive",
+              "shape": "box",
+              "size": [
+                0.02,
+                0.02,
+                0.02
+              ],
+              "pose": {
+                "p": [
+                  0,
+                  0,
+                  0
+                ],
+                "q": [
+                  1,
+                  0,
+                  0,
+                  0
+                ]
+              }
+            }
+          ]
+        },
+        "inertial": {
+          "value": {
+            "mass": 1.0,
+            "diagonal": [
+              0.004911192028814689,
+              0.0033220721757978586,
+              0.0024161628964594513
+            ],
+            "pose": {
+              "p": [
+                -8.407459304110576e-05,
+                0.023195442887891167,
+                -0.03926002746527367
+              ],
+              "q": [
+                1.0,
+                0.0,
+                0.0,
+                0.0
+              ]
+            }
+          }
+        },
+        "affordances": []
+      },
+      {
+        "id": "/Root/split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/rl_wheel_link",
+        "name": "rl_wheel_link",
+        "geometry": {
+          "visual": [
+            {
+              "kind": "primitive",
+              "shape": "box",
+              "size": [
+                0.02,
+                0.02,
+                0.02
+              ],
+              "pose": {
+                "p": [
+                  0,
+                  0,
+                  0
+                ],
+                "q": [
+                  1,
+                  0,
+                  0,
+                  0
+                ]
+              }
+            }
+          ]
+        },
+        "inertial": {
+          "value": {
+            "mass": 8.0,
+            "diagonal": [
+              0.04143472268511746,
+              0.057670640916552475,
+              0.041424188937492924
+            ],
+            "pose": {
+              "p": [
+                -4.657133355352727e-05,
+                -0.018877754264949337,
+                -0.00018506315129496187
+              ],
+              "q": [
+                1.0,
+                0.0,
+                0.0,
+                0.0
+              ]
+            }
+          }
+        },
+        "affordances": []
+      },
+      {
+        "id": "/Root/split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/rr_steering_wheel_link",
+        "name": "rr_steering_wheel_link",
+        "geometry": {
+          "visual": [
+            {
+              "kind": "primitive",
+              "shape": "box",
+              "size": [
+                0.02,
+                0.02,
+                0.02
+              ],
+              "pose": {
+                "p": [
+                  0,
+                  0,
+                  0
+                ],
+                "q": [
+                  1,
+                  0,
+                  0,
+                  0
+                ]
+              }
+            }
+          ]
+        },
+        "inertial": {
+          "value": {
+            "mass": 1.0,
+            "diagonal": [
+              0.0049083094690903824,
+              0.0033194187533382383,
+              0.002410626914275524
+            ],
+            "pose": {
+              "p": [
+                0.00012101434397897293,
+                -0.02319527958079332,
+                -0.03926002746527367
+              ],
+              "q": [
+                1.0,
+                0.0,
+                0.0,
+                0.0
+              ]
+            }
+          }
+        },
+        "affordances": []
+      },
+      {
+        "id": "/Root/split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/rr_wheel_link",
+        "name": "rr_wheel_link",
+        "geometry": {
+          "visual": [
+            {
+              "kind": "primitive",
+              "shape": "box",
+              "size": [
+                0.02,
+                0.02,
+                0.02
+              ],
+              "pose": {
+                "p": [
+                  0,
+                  0,
+                  0
+                ],
+                "q": [
+                  1,
+                  0,
+                  0,
+                  0
+                ]
+              }
+            }
+          ]
+        },
+        "inertial": {
+          "value": {
+            "mass": 8.0,
+            "diagonal": [
+              0.04151305395869951,
+              0.057980776110266946,
+              0.041734988528881176
+            ],
+            "pose": {
+              "p": [
+                -0.0005346584965174941,
+                0.018878025047928414,
+                0.000154999185698744
+              ],
+              "q": [
+                1.0,
+                0.0,
+                0.0,
+                0.0
+              ]
+            }
+          }
+        },
+        "affordances": []
+      }
+    ],
+    "joints": [
+      {
+        "id": "/Root/split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/dummy_base_x/mobile_translate_x",
+        "parent": "/Root/split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/dummy_base_x",
+        "child": "/Root/split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/dummy_base_y",
+        "type": {
+          "value": "prismatic"
+        },
+        "origin": {
+          "value": {
+            "p": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "q": [
+              1.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          }
+        },
+        "axis": {
+          "value": [
+            1.0,
+            0.0,
+            0.0
+          ]
+        },
+        "limits": {
+          "value": {
+            "lo": -600.0,
+            "hi": 600.0
+          }
+        },
+        "q": {
+          "value": [
+            0.0
+          ]
+        },
+        "qd": {
+          "value": [
+            0.0
+          ]
+        },
+        "dynamics": {
+          "value": {
+            "damping": 0.0
+          }
+        },
+        "actuator": {
+          "kind": "position",
+          "gains": {
+            "kp": 75548.45567732779,
+            "kv": 4809.564065602272
+          },
+          "limits": {
+            "effort": 4800.0
+          }
+        },
+        "anchor": {
+          "value": [
+            3.053583164103202e-09,
+            3.278919136207037e-09,
+            -2.8807910723571695e-08
+          ]
+        }
+      },
+      {
+        "id": "/Root/split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/dummy_base_y/mobile_translate_y",
+        "parent": "/Root/split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/dummy_base_y",
+        "child": "/Root/split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/dummy_base_rotate",
+        "type": {
+          "value": "prismatic"
+        },
+        "origin": {
+          "value": {
+            "p": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "q": [
+              1.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          }
+        },
+        "axis": {
+          "value": [
+            0.0,
+            1.0,
+            0.0
+          ]
+        },
+        "limits": {
+          "value": {
+            "lo": -600.0,
+            "hi": 600.0
+          }
+        },
+        "q": {
+          "value": [
+            0.0
+          ]
+        },
+        "qd": {
+          "value": [
+            0.0
+          ]
+        },
+        "dynamics": {
+          "value": {
+            "damping": 0.0
+          }
+        },
+        "actuator": {
+          "kind": "position",
+          "gains": {
+            "kp": 75547.46871688768,
+            "kv": 4809.501233749201
+          },
+          "limits": {
+            "effort": 4800.0
+          }
+        },
+        "anchor": {
+          "value": [
+            3.053583164103202e-09,
+            3.278919136207037e-09,
+            -2.8807910723571695e-08
+          ]
+        }
+      },
+      {
+        "id": "/Root/split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/dummy_base_rotate/mobile_rotate",
+        "parent": "/Root/split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/dummy_base_rotate",
+        "child": "/Root/split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/base_link",
+        "type": {
+          "value": "revolute"
+        },
+        "origin": {
+          "value": {
+            "p": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "q": [
+              1.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          }
+        },
+        "axis": {
+          "value": [
+            0.0,
+            0.0,
+            1.0
+          ]
+        },
+        "limits": {
+          "value": {
+            "lo": -1047.1975511965977,
+            "hi": 1047.1975511965977
+          }
+        },
+        "q": {
+          "value": [
+            0.0
+          ]
+        },
+        "qd": {
+          "value": [
+            0.0
+          ]
+        },
+        "dynamics": {
+          "value": {
+            "damping": 0.0
+          }
+        },
+        "actuator": {
+          "kind": "position",
+          "gains": {
+            "kp": 8276.399864471075,
+            "kv": 526.8919797742658
+          },
+          "limits": {
+            "effort": 4800.0
+          }
+        },
+        "anchor": {
+          "value": [
+            3.053583164103202e-09,
+            3.278919136207037e-09,
+            -2.8807910723571695e-08
+          ]
+        }
+      },
+      {
+        "id": "fixed:/Root/split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/box_link",
+        "parent": "/Root/split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/base_link",
+        "child": "/Root/split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/box_link",
+        "type": {
+          "value": "fixed"
+        },
+        "origin": {
+          "value": {
+            "p": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "q": [
+              1.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          }
+        },
+        "q": {
+          "value": []
+        },
+        "qd": {
+          "value": []
+        }
+      },
+      {
+        "id": "fixed:/Root/split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/front_camera_link",
+        "parent": "/Root/split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/box_link",
+        "child": "/Root/split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/front_camera_link",
+        "type": {
+          "value": "fixed"
+        },
+        "origin": {
+          "value": {
+            "p": [
+              0.3567900061607361,
+              0.0,
+              0.15818999707698822
+            ],
+            "q": [
+              0.9445087909698487,
+              -0.05205728054711993,
+              0.3239537374886752,
+              0.015721300513370826
+            ]
+          }
+        },
+        "q": {
+          "value": []
+        },
+        "qd": {
+          "value": []
+        }
+      },
+      {
+        "id": "fixed:/Root/split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/lidar_link",
+        "parent": "/Root/split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/box_link",
+        "child": "/Root/split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/lidar_link",
+        "type": {
+          "value": "fixed"
+        },
+        "origin": {
+          "value": {
+            "p": [
+              0.31755000352859497,
+              0.0,
+              0.036187998950481415
+            ],
+            "q": [
+              0.9948510527610779,
+              -0.017415343141746507,
+              0.0998338542046406,
+              0.0011358688642714085
+            ]
+          }
+        },
+        "q": {
+          "value": []
+        },
+        "qd": {
+          "value": []
+        }
+      },
+      {
+        "id": "/Root/split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/box_link/lifting_joint",
+        "parent": "/Root/split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/box_link",
+        "child": "/Root/split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/lifting_link",
+        "type": {
+          "value": "prismatic"
+        },
+        "origin": {
+          "value": {
+            "p": [
+              0.22448000311851501,
+              0.0,
+              1.1146999597549438
+            ],
+            "q": [
+              1.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          }
+        },
+        "axis": {
+          "value": [
+            0.0,
+            0.0,
+            1.0
+          ]
+        },
+        "limits": {
+          "value": {
+            "lo": -0.6000000238418579,
+            "hi": 0.0
+          }
+        },
+        "q": {
+          "value": [
+            0.0
+          ]
+        },
+        "qd": {
+          "value": [
+            0.0
+          ]
+        },
+        "dynamics": {
+          "value": {
+            "damping": 0.0
+          }
+        },
+        "actuator": {
+          "kind": "position",
+          "gains": {
+            "kp": 3172.9986955913123,
+            "kv": 201.99937073099738
+          },
+          "limits": {
+            "effort": 1000000.0
+          }
+        },
+        "anchor": {
+          "value": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        }
+      },
+      {
+        "id": "fixed:/Root/split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/top_camera_link",
+        "parent": "/Root/split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/lifting_link",
+        "child": "/Root/split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/top_camera_link",
+        "type": {
+          "value": "fixed"
+        },
+        "origin": {
+          "value": {
+            "p": [
+              0.16193999688148497,
+              0.0,
+              0.2983800172805786
+            ],
+            "q": [
+              0.9996579576165169,
+              0.02485883346919022,
+              0.0002019702270167009,
+              -0.008121907445459473
+            ]
+          }
+        },
+        "q": {
+          "value": []
+        },
+        "qd": {
+          "value": []
+        }
+      },
+      {
+        "id": "fixed:/Root/split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/fr/arm_base",
+        "parent": "/Root/split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/lifting_link",
+        "child": "/Root/split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/fr/arm_base",
+        "type": {
+          "value": "fixed"
+        },
+        "origin": {
+          "value": {
+            "p": [
+              0.14399999688148496,
+              -0.306,
+              0.13800004024505608
+            ],
+            "q": [
+              1.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          }
+        },
+        "q": {
+          "value": []
+        },
+        "qd": {
+          "value": []
+        }
+      },
+      {
+        "id": "/Root/split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/fr/arm_base/fr_joint1",
+        "parent": "/Root/split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/fr/arm_base",
+        "child": "/Root/split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/fr/link1",
+        "type": {
+          "value": "revolute"
+        },
+        "origin": {
+          "value": {
+            "p": [
+              0.0,
+              0.0,
+              0.12300000339746475
+            ],
+            "q": [
+              -0.7071055173873901,
+              0.0,
+              0.0,
+              0.7071080449834461
+            ]
+          }
+        },
+        "axis": {
+          "value": [
+            0.0,
+            0.0,
+            1.0
+          ]
+        },
+        "limits": {
+          "value": {
+            "lo": -2.6180000032620017,
+            "hi": 2.6180000032620017
+          }
+        },
+        "q": {
+          "value": [
+            0.0
+          ]
+        },
+        "qd": {
+          "value": [
+            0.0
+          ]
+        },
+        "dynamics": {
+          "value": {
+            "damping": 0.0
+          }
+        },
+        "actuator": {
+          "kind": "position",
+          "gains": {
+            "kp": 28.07847438328351,
+            "kv": 1.787531197031491
+          },
+          "limits": {
+            "effort": 1000.0
+          }
+        },
+        "anchor": {
+          "value": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        }
+      },
+      {
+        "id": "/Root/split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/fr/link1/fr_joint2",
+        "parent": "/Root/split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/fr/link1",
+        "child": "/Root/split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/fr/link2",
+        "type": {
+          "value": "revolute"
+        },
+        "origin": {
+          "value": {
+            "p": [
+              5.551115123125783e-17,
+              0.0,
+              0.0
+            ],
+            "q": [
+              -0.5086483416392396,
+              -0.49119753392570764,
+              0.5086519590505995,
+              0.49119754861658477
+            ]
+          }
+        },
+        "axis": {
+          "value": [
+            0.0,
+            0.0,
+            1.0
+          ]
+        },
+        "limits": {
+          "value": {
+            "lo": 0.0,
+            "hi": 3.139999816941817
+          }
+        },
+        "q": {
+          "value": [
+            0.0
+          ]
+        },
+        "qd": {
+          "value": [
+            0.0
+          ]
+        },
+        "dynamics": {
+          "value": {
+            "damping": 0.0
+          }
+        },
+        "actuator": {
+          "kind": "position",
+          "gains": {
+            "kp": 42.113961918544916,
+            "kv": 2.681058085008105
+          },
+          "limits": {
+            "effort": 1000.0
+          }
+        },
+        "anchor": {
+          "value": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        }
+      },
+      {
+        "id": "/Root/split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/fr/link2/fr_joint3",
+        "parent": "/Root/split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/fr/link2",
+        "child": "/Root/split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/fr/link3",
+        "type": {
+          "value": "revolute"
+        },
+        "origin": {
+          "value": {
+            "p": [
+              0.28358000863953875,
+              0.02872599939088194,
+              5.600484964674024e-09
+            ],
+            "q": [
+              0.9994548331016233,
+              -6.499312872462891e-09,
+              1.1316317016798486e-09,
+              0.03301570217042804
+            ]
+          }
+        },
+        "axis": {
+          "value": [
+            0.0,
+            0.0,
+            1.0
+          ]
+        },
+        "limits": {
+          "value": {
+            "lo": -2.696999747522003,
+            "hi": 0.0
+          }
+        },
+        "q": {
+          "value": [
+            0.0
+          ]
+        },
+        "qd": {
+          "value": [
+            0.0
+          ]
+        },
+        "dynamics": {
+          "value": {
+            "damping": 0.0
+          }
+        },
+        "actuator": {
+          "kind": "position",
+          "gains": {
+            "kp": 68.95727845893228,
+            "kv": 4.389956691561339
+          },
+          "limits": {
+            "effort": 1000.0
+          }
+        },
+        "anchor": {
+          "value": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        }
+      },
+      {
+        "id": "/Root/split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/fr/link3/fr_joint4",
+        "parent": "/Root/split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/fr/link3",
+        "child": "/Root/split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/fr/link4",
+        "type": {
+          "value": "revolute"
+        },
+        "origin": {
+          "value": {
+            "p": [
+              -0.24221000787224345,
+              0.06851400489321047,
+              1.237147034816033e-08
+            ],
+            "q": [
+              -0.5447666909278108,
+              0.5447686614029787,
+              0.45080918257043706,
+              -0.4508075408851809
+            ]
+          }
+        },
+        "axis": {
+          "value": [
+            0.0,
+            0.0,
+            1.0
+          ]
+        },
+        "limits": {
+          "value": {
+            "lo": -1.8319999654581953,
+            "hi": 1.8319999654581953
+          }
+        },
+        "q": {
+          "value": [
+            0.0
+          ]
+        },
+        "qd": {
+          "value": [
+            0.0
+          ]
+        },
+        "dynamics": {
+          "value": {
+            "damping": 0.0
+          }
+        },
+        "actuator": {
+          "kind": "position",
+          "gains": {
+            "kp": 6.775687362416618,
+            "kv": 0.4313536546295565
+          },
+          "limits": {
+            "effort": 1000.0
+          }
+        },
+        "anchor": {
+          "value": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        }
+      },
+      {
+        "id": "/Root/split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/fr/link4/fr_joint5",
+        "parent": "/Root/split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/fr/link4",
+        "child": "/Root/split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/fr/link5",
+        "type": {
+          "value": "revolute"
+        },
+        "origin": {
+          "value": {
+            "p": [
+              0.0,
+              0.0,
+              -5.551115123125783e-17
+            ],
+            "q": [
+              0.7071054361893868,
+              0.7071081261811484,
+              -1.3950688811315964e-08,
+              4.494726893095191e-08
+            ]
+          }
+        },
+        "axis": {
+          "value": [
+            0.0,
+            0.0,
+            1.0
+          ]
+        },
+        "limits": {
+          "value": {
+            "lo": -1.219999954319697,
+            "hi": 1.219999954319697
+          }
+        },
+        "q": {
+          "value": [
+            0.0
+          ]
+        },
+        "qd": {
+          "value": [
+            0.0
+          ]
+        },
+        "dynamics": {
+          "value": {
+            "damping": 0.0
+          }
+        },
+        "actuator": {
+          "kind": "position",
+          "gains": {
+            "kp": 8.991148646256843,
+            "kv": 0.5723943004503118
+          },
+          "limits": {
+            "effort": 1000.0
+          }
+        },
+        "anchor": {
+          "value": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        }
+      },
+      {
+        "id": "/Root/split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/fr/link5/fr_joint6",
+        "parent": "/Root/split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/fr/link5",
+        "child": "/Root/split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/fr/link6",
+        "type": {
+          "value": "revolute"
+        },
+        "origin": {
+          "value": {
+            "p": [
+              1.6887486520289485e-08,
+              0.09100003614107255,
+              0.0014165255931941068
+            ],
+            "q": [
+              -0.499997962879571,
+              0.5000000388304201,
+              0.5000000773239666,
+              0.5000019209581951
+            ]
+          }
+        },
+        "axis": {
+          "value": [
+            0.0,
+            0.0,
+            1.0
+          ]
+        },
+        "limits": {
+          "value": {
+            "lo": -3.139999816941817,
+            "hi": 3.139999816941817
+          }
+        },
+        "q": {
+          "value": [
+            0.0
+          ]
+        },
+        "qd": {
+          "value": [
+            0.0
+          ]
+        },
+        "dynamics": {
+          "value": {
+            "damping": 0.0
+          }
+        },
+        "actuator": {
+          "kind": "position",
+          "gains": {
+            "kp": 1.767954250722499,
+            "kv": 0.11255146326512552
+          },
+          "limits": {
+            "effort": 1000.0
+          }
+        },
+        "anchor": {
+          "value": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        }
+      },
+      {
+        "id": "/Root/split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/fr/link6/fr_joint7",
+        "parent": "/Root/split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/fr/link6",
+        "child": "/Root/split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/fr/link7",
+        "type": {
+          "value": "prismatic"
+        },
+        "origin": {
+          "value": {
+            "p": [
+              1.619810235942154e-08,
+              3.258388736604445e-08,
+              0.1350300533909734
+            ],
+            "q": [
+              0.4999979722465325,
+              0.5000000327113323,
+              0.5000019097641148,
+              0.5000000852702532
+            ]
+          }
+        },
+        "axis": {
+          "value": [
+            0.0,
+            0.0,
+            -1.0
+          ]
+        },
+        "limits": {
+          "value": {
+            "lo": 0.0,
+            "hi": 0.05000000074505806
+          }
+        },
+        "q": {
+          "value": [
+            0.0
+          ]
+        },
+        "qd": {
+          "value": [
+            0.0
+          ]
+        },
+        "dynamics": {
+          "value": {
+            "damping": 0.0
+          }
+        },
+        "actuator": {
+          "kind": "position",
+          "gains": {
+            "kp": 26.13697409331889,
+            "kv": 1.6639314497666045
+          },
+          "limits": {
+            "effort": 1000.0
+          }
+        },
+        "anchor": {
+          "value": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        }
+      },
+      {
+        "id": "/Root/split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/fr/link6/fr_joint8",
+        "parent": "/Root/split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/fr/link6",
+        "child": "/Root/split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/fr/link8",
+        "type": {
+          "value": "prismatic"
+        },
+        "origin": {
+          "value": {
+            "p": [
+              1.619810235942154e-08,
+              3.258388736604445e-08,
+              0.1350300533909734
+            ],
+            "q": [
+              -0.49999824926076697,
+              0.4999998892711861,
+              0.5000019492659428,
+              -0.4999999121952194
+            ]
+          }
+        },
+        "axis": {
+          "value": [
+            0.0,
+            0.0,
+            1.0
+          ]
+        },
+        "limits": {
+          "value": {
+            "lo": -0.05000000074505806,
+            "hi": 0.0
+          }
+        },
+        "q": {
+          "value": [
+            0.0
+          ]
+        },
+        "qd": {
+          "value": [
+            0.0
+          ]
+        },
+        "dynamics": {
+          "value": {
+            "damping": 0.0
+          }
+        },
+        "anchor": {
+          "value": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        }
+      },
+      {
+        "id": "fixed:/Root/split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/fl/arm_base",
+        "parent": "/Root/split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/lifting_link",
+        "child": "/Root/split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/fl/arm_base",
+        "type": {
+          "value": "fixed"
+        },
+        "origin": {
+          "value": {
+            "p": [
+              0.14399999688148496,
+              0.306,
+              0.13800004024505608
+            ],
+            "q": [
+              1.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          }
+        },
+        "q": {
+          "value": []
+        },
+        "qd": {
+          "value": []
+        }
+      },
+      {
+        "id": "/Root/split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/fl/arm_base/fl_joint1",
+        "parent": "/Root/split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/fl/arm_base",
+        "child": "/Root/split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/fl/link1",
+        "type": {
+          "value": "revolute"
+        },
+        "origin": {
+          "value": {
+            "p": [
+              0.0,
+              0.0,
+              0.12300000339746475
+            ],
+            "q": [
+              -0.7071055173873901,
+              0.0,
+              0.0,
+              0.7071080449834461
+            ]
+          }
+        },
+        "axis": {
+          "value": [
+            0.0,
+            0.0,
+            1.0
+          ]
+        },
+        "limits": {
+          "value": {
+            "lo": -2.6180000032620017,
+            "hi": 2.6180000032620017
+          }
+        },
+        "q": {
+          "value": [
+            0.0
+          ]
+        },
+        "qd": {
+          "value": [
+            0.0
+          ]
+        },
+        "dynamics": {
+          "value": {
+            "damping": 0.0
+          }
+        },
+        "actuator": {
+          "kind": "position",
+          "gains": {
+            "kp": 28.07847438328355,
+            "kv": 1.7875311970314935
+          },
+          "limits": {
+            "effort": 1000.0
+          }
+        },
+        "anchor": {
+          "value": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        }
+      },
+      {
+        "id": "/Root/split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/fl/link1/fl_joint2",
+        "parent": "/Root/split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/fl/link1",
+        "child": "/Root/split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/fl/link2",
+        "type": {
+          "value": "revolute"
+        },
+        "origin": {
+          "value": {
+            "p": [
+              -5.551115123125783e-17,
+              0.0,
+              0.0
+            ],
+            "q": [
+              -0.5086483416392396,
+              -0.49119753392570764,
+              0.5086519590505995,
+              0.49119754861658477
+            ]
+          }
+        },
+        "axis": {
+          "value": [
+            0.0,
+            0.0,
+            1.0
+          ]
+        },
+        "limits": {
+          "value": {
+            "lo": 0.0,
+            "hi": 3.139999816941817
+          }
+        },
+        "q": {
+          "value": [
+            0.0
+          ]
+        },
+        "qd": {
+          "value": [
+            0.0
+          ]
+        },
+        "dynamics": {
+          "value": {
+            "damping": 0.0
+          }
+        },
+        "actuator": {
+          "kind": "position",
+          "gains": {
+            "kp": 42.113961918544234,
+            "kv": 2.681058085008062
+          },
+          "limits": {
+            "effort": 1000.0
+          }
+        },
+        "anchor": {
+          "value": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        }
+      },
+      {
+        "id": "/Root/split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/fl/link2/fl_joint3",
+        "parent": "/Root/split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/fl/link2",
+        "child": "/Root/split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/fl/link3",
+        "type": {
+          "value": "revolute"
+        },
+        "origin": {
+          "value": {
+            "p": [
+              0.28358000863953875,
+              0.02872599939088194,
+              5.600485020185175e-09
+            ],
+            "q": [
+              0.9994548331016233,
+              -6.499312872462891e-09,
+              1.1316317016798486e-09,
+              0.03301570217042804
+            ]
+          }
+        },
+        "axis": {
+          "value": [
+            0.0,
+            0.0,
+            1.0
+          ]
+        },
+        "limits": {
+          "value": {
+            "lo": -2.696999747522003,
+            "hi": 0.0
+          }
+        },
+        "q": {
+          "value": [
+            0.0
+          ]
+        },
+        "qd": {
+          "value": [
+            0.0
+          ]
+        },
+        "dynamics": {
+          "value": {
+            "damping": 0.0
+          }
+        },
+        "actuator": {
+          "kind": "position",
+          "gains": {
+            "kp": 68.95727845893157,
+            "kv": 4.389956691561293
+          },
+          "limits": {
+            "effort": 1000.0
+          }
+        },
+        "anchor": {
+          "value": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        }
+      },
+      {
+        "id": "/Root/split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/fl/link3/fl_joint4",
+        "parent": "/Root/split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/fl/link3",
+        "child": "/Root/split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/fl/link4",
+        "type": {
+          "value": "revolute"
+        },
+        "origin": {
+          "value": {
+            "p": [
+              -0.2422100078722434,
+              0.06851400489321047,
+              1.237147034816033e-08
+            ],
+            "q": [
+              -0.5447666909278108,
+              0.5447686614029787,
+              0.45080918257043706,
+              -0.4508075408851809
+            ]
+          }
+        },
+        "axis": {
+          "value": [
+            0.0,
+            0.0,
+            1.0
+          ]
+        },
+        "limits": {
+          "value": {
+            "lo": -1.8319999654581953,
+            "hi": 1.8319999654581953
+          }
+        },
+        "q": {
+          "value": [
+            0.0
+          ]
+        },
+        "qd": {
+          "value": [
+            0.0
+          ]
+        },
+        "dynamics": {
+          "value": {
+            "damping": 0.0
+          }
+        },
+        "actuator": {
+          "kind": "position",
+          "gains": {
+            "kp": 6.77568736241655,
+            "kv": 0.4313536546295521
+          },
+          "limits": {
+            "effort": 1000.0
+          }
+        },
+        "anchor": {
+          "value": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        }
+      },
+      {
+        "id": "/Root/split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/fl/link4/fl_joint5",
+        "parent": "/Root/split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/fl/link4",
+        "child": "/Root/split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/fl/link5",
+        "type": {
+          "value": "revolute"
+        },
+        "origin": {
+          "value": {
+            "p": [
+              2.220446049250313e-16,
+              0.0,
+              0.0
+            ],
+            "q": [
+              0.7071054361893868,
+              0.7071081261811484,
+              -1.3950688811315964e-08,
+              4.494726893095191e-08
+            ]
+          }
+        },
+        "axis": {
+          "value": [
+            0.0,
+            0.0,
+            1.0
+          ]
+        },
+        "limits": {
+          "value": {
+            "lo": -1.219999954319697,
+            "hi": 1.219999954319697
+          }
+        },
+        "q": {
+          "value": [
+            0.0
+          ]
+        },
+        "qd": {
+          "value": [
+            0.0
+          ]
+        },
+        "dynamics": {
+          "value": {
+            "damping": 0.0
+          }
+        },
+        "actuator": {
+          "kind": "position",
+          "gains": {
+            "kp": 8.991148646256635,
+            "kv": 0.5723943004502986
+          },
+          "limits": {
+            "effort": 1000.0
+          }
+        },
+        "anchor": {
+          "value": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        }
+      },
+      {
+        "id": "/Root/split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/fl/link5/fl_joint6",
+        "parent": "/Root/split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/fl/link5",
+        "child": "/Root/split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/fl/link6",
+        "type": {
+          "value": "revolute"
+        },
+        "origin": {
+          "value": {
+            "p": [
+              1.6887486520289485e-08,
+              0.09100003614107244,
+              0.0014165255931940512
+            ],
+            "q": [
+              -0.499997962879571,
+              0.5000000388304201,
+              0.5000000773239666,
+              0.5000019209581951
+            ]
+          }
+        },
+        "axis": {
+          "value": [
+            0.0,
+            0.0,
+            1.0
+          ]
+        },
+        "limits": {
+          "value": {
+            "lo": -3.139999816941817,
+            "hi": 3.139999816941817
+          }
+        },
+        "q": {
+          "value": [
+            0.0
+          ]
+        },
+        "qd": {
+          "value": [
+            0.0
+          ]
+        },
+        "dynamics": {
+          "value": {
+            "damping": 0.0
+          }
+        },
+        "actuator": {
+          "kind": "position",
+          "gains": {
+            "kp": 1.7679542507225539,
+            "kv": 0.112551463265129
+          },
+          "limits": {
+            "effort": 1000.0
+          }
+        },
+        "anchor": {
+          "value": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        }
+      },
+      {
+        "id": "/Root/split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/fl/link6/fl_joint7",
+        "parent": "/Root/split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/fl/link6",
+        "child": "/Root/split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/fl/link7",
+        "type": {
+          "value": "prismatic"
+        },
+        "origin": {
+          "value": {
+            "p": [
+              1.619810241493269e-08,
+              3.2583887588089055e-08,
+              0.1350300533909733
+            ],
+            "q": [
+              0.4999979722465325,
+              0.5000000327113323,
+              0.5000019097641148,
+              0.5000000852702532
+            ]
+          }
+        },
+        "axis": {
+          "value": [
+            0.0,
+            0.0,
+            -1.0
+          ]
+        },
+        "limits": {
+          "value": {
+            "lo": 0.0,
+            "hi": 0.05000000074505806
+          }
+        },
+        "q": {
+          "value": [
+            0.0
+          ]
+        },
+        "qd": {
+          "value": [
+            0.0
+          ]
+        },
+        "dynamics": {
+          "value": {
+            "damping": 0.0
+          }
+        },
+        "actuator": {
+          "kind": "position",
+          "gains": {
+            "kp": 26.13697409331889,
+            "kv": 1.6639314497666045
+          },
+          "limits": {
+            "effort": 1000.0
+          }
+        },
+        "anchor": {
+          "value": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        }
+      },
+      {
+        "id": "/Root/split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/fl/link6/fl_joint8",
+        "parent": "/Root/split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/fl/link6",
+        "child": "/Root/split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/fl/link8",
+        "type": {
+          "value": "prismatic"
+        },
+        "origin": {
+          "value": {
+            "p": [
+              1.619810241493269e-08,
+              3.2583887588089055e-08,
+              0.1350300533909733
+            ],
+            "q": [
+              -0.49999824926076697,
+              0.4999998892711861,
+              0.5000019492659428,
+              -0.4999999121952194
+            ]
+          }
+        },
+        "axis": {
+          "value": [
+            0.0,
+            0.0,
+            1.0
+          ]
+        },
+        "limits": {
+          "value": {
+            "lo": -0.05000000074505806,
+            "hi": 0.0
+          }
+        },
+        "q": {
+          "value": [
+            0.0
+          ]
+        },
+        "qd": {
+          "value": [
+            0.0
+          ]
+        },
+        "dynamics": {
+          "value": {
+            "damping": 0.0
+          }
+        },
+        "anchor": {
+          "value": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        }
+      },
+      {
+        "id": "/Root/split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/base_link/fl_steering_joint",
+        "parent": "/Root/split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/base_link",
+        "child": "/Root/split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/fl_steering_wheel_link",
+        "type": {
+          "value": "revolute"
+        },
+        "origin": {
+          "value": {
+            "p": [
+              0.25,
+              0.1899999976158142,
+              -0.10000000149011612
+            ],
+            "q": [
+              1.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          }
+        },
+        "axis": {
+          "value": [
+            0.0,
+            0.0,
+            -1.0
+          ]
+        },
+        "limits": {
+          "value": {
+            "lo": -2.099999724907267,
+            "hi": 2.099999724907267
+          }
+        },
+        "q": {
+          "value": [
+            0.0
+          ]
+        },
+        "qd": {
+          "value": [
+            0.0
+          ]
+        },
+        "dynamics": {
+          "value": {
+            "damping": 0.0
+          }
+        },
+        "actuator": {
+          "kind": "position",
+          "gains": {
+            "kp": 46.61353131268699,
+            "kv": 2.9675095693531914
+          },
+          "limits": {
+            "effort": 5.0
+          }
+        },
+        "anchor": {
+          "value": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        }
+      },
+      {
+        "id": "/Root/split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/fl_steering_wheel_link/fl_wheel",
+        "parent": "/Root/split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/fl_steering_wheel_link",
+        "child": "/Root/split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/fl_wheel_link",
+        "type": {
+          "value": "revolute"
+        },
+        "origin": {
+          "value": {
+            "p": [
+              0.0,
+              0.0,
+              -0.11999999731779099
+            ],
+            "q": [
+              1.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          }
+        },
+        "axis": {
+          "value": [
+            0.0,
+            1.0,
+            0.0
+          ]
+        },
+        "q": {
+          "value": [
+            0.0
+          ]
+        },
+        "qd": {
+          "value": [
+            0.0
+          ]
+        },
+        "dynamics": {
+          "value": {
+            "damping": 0.0
+          }
+        },
+        "actuator": {
+          "kind": "position",
+          "gains": {
+            "kp": 56.918888296031845,
+            "kv": 3.623568971043558
+          },
+          "limits": {
+            "effort": 3.4028234663852886e+38
+          }
+        },
+        "anchor": {
+          "value": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        }
+      },
+      {
+        "id": "/Root/split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/base_link/fr_steering_joint",
+        "parent": "/Root/split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/base_link",
+        "child": "/Root/split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/fr_steering_wheel_link",
+        "type": {
+          "value": "revolute"
+        },
+        "origin": {
+          "value": {
+            "p": [
+              0.25,
+              -0.1899999976158142,
+              -0.10000000149011612
+            ],
+            "q": [
+              1.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          }
+        },
+        "axis": {
+          "value": [
+            0.0,
+            0.0,
+            -1.0
+          ]
+        },
+        "limits": {
+          "value": {
+            "lo": -2.099999724907267,
+            "hi": 2.099999724907267
+          }
+        },
+        "q": {
+          "value": [
+            0.0
+          ]
+        },
+        "qd": {
+          "value": [
+            0.0
+          ]
+        },
+        "dynamics": {
+          "value": {
+            "damping": 0.0
+          }
+        },
+        "actuator": {
+          "kind": "position",
+          "gains": {
+            "kp": 46.64712087889251,
+            "kv": 2.96964794755236
+          },
+          "limits": {
+            "effort": 5.0
+          }
+        },
+        "anchor": {
+          "value": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        }
+      },
+      {
+        "id": "/Root/split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/fr_steering_wheel_link/fr_wheel",
+        "parent": "/Root/split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/fr_steering_wheel_link",
+        "child": "/Root/split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/fr_wheel_link",
+        "type": {
+          "value": "revolute"
+        },
+        "origin": {
+          "value": {
+            "p": [
+              0.0,
+              0.0,
+              -0.11999999731779099
+            ],
+            "q": [
+              1.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          }
+        },
+        "axis": {
+          "value": [
+            0.0,
+            1.0,
+            0.0
+          ]
+        },
+        "q": {
+          "value": [
+            0.0
+          ]
+        },
+        "qd": {
+          "value": [
+            0.0
+          ]
+        },
+        "dynamics": {
+          "value": {
+            "damping": 0.0
+          }
+        },
+        "actuator": {
+          "kind": "position",
+          "gains": {
+            "kp": 56.9572003346529,
+            "kv": 3.626007991174146
+          },
+          "limits": {
+            "effort": 3.4028234663852886e+38
+          }
+        },
+        "anchor": {
+          "value": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        }
+      },
+      {
+        "id": "/Root/split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/base_link/rl_steering_joint",
+        "parent": "/Root/split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/base_link",
+        "child": "/Root/split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/rl_steering_wheel_link",
+        "type": {
+          "value": "revolute"
+        },
+        "origin": {
+          "value": {
+            "p": [
+              -0.25,
+              0.1899999976158142,
+              -0.10000000149011612
+            ],
+            "q": [
+              1.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          }
+        },
+        "axis": {
+          "value": [
+            0.0,
+            0.0,
+            -1.0
+          ]
+        },
+        "limits": {
+          "value": {
+            "lo": -2.099999724907267,
+            "hi": 2.099999724907267
+          }
+        },
+        "q": {
+          "value": [
+            0.0
+          ]
+        },
+        "qd": {
+          "value": [
+            0.0
+          ]
+        },
+        "dynamics": {
+          "value": {
+            "damping": 0.0
+          }
+        },
+        "actuator": {
+          "kind": "position",
+          "gains": {
+            "kp": 46.61353131268711,
+            "kv": 2.967509569353199
+          },
+          "limits": {
+            "effort": 5.0
+          }
+        },
+        "anchor": {
+          "value": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        }
+      },
+      {
+        "id": "/Root/split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/rl_steering_wheel_link/rl_wheel",
+        "parent": "/Root/split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/rl_steering_wheel_link",
+        "child": "/Root/split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/rl_wheel_link",
+        "type": {
+          "value": "revolute"
+        },
+        "origin": {
+          "value": {
+            "p": [
+              0.0,
+              0.0,
+              -0.11999999731779099
+            ],
+            "q": [
+              1.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          }
+        },
+        "axis": {
+          "value": [
+            0.0,
+            1.0,
+            0.0
+          ]
+        },
+        "q": {
+          "value": [
+            0.0
+          ]
+        },
+        "qd": {
+          "value": [
+            0.0
+          ]
+        },
+        "dynamics": {
+          "value": {
+            "damping": 0.0
+          }
+        },
+        "actuator": {
+          "kind": "position",
+          "gains": {
+            "kp": 56.918888296031845,
+            "kv": 3.623568971043558
+          },
+          "limits": {
+            "effort": 3.4028234663852886e+38
+          }
+        },
+        "anchor": {
+          "value": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        }
+      },
+      {
+        "id": "/Root/split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/base_link/rr_steering_joint",
+        "parent": "/Root/split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/base_link",
+        "child": "/Root/split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/rr_steering_wheel_link",
+        "type": {
+          "value": "revolute"
+        },
+        "origin": {
+          "value": {
+            "p": [
+              -0.23000000417232513,
+              -0.20600000023841858,
+              -0.10000000149011612
+            ],
+            "q": [
+              1.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          }
+        },
+        "axis": {
+          "value": [
+            0.0,
+            0.0,
+            -1.0
+          ]
+        },
+        "limits": {
+          "value": {
+            "lo": -2.099999724907267,
+            "hi": 2.099999724907267
+          }
+        },
+        "q": {
+          "value": [
+            0.0
+          ]
+        },
+        "qd": {
+          "value": [
+            0.0
+          ]
+        },
+        "dynamics": {
+          "value": {
+            "damping": 0.0
+          }
+        },
+        "actuator": {
+          "kind": "position",
+          "gains": {
+            "kp": 46.91712317504957,
+            "kv": 2.9868368275841832
+          },
+          "limits": {
+            "effort": 5.0
+          }
+        },
+        "anchor": {
+          "value": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        }
+      },
+      {
+        "id": "/Root/split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/rr_steering_wheel_link/rr_wheel",
+        "parent": "/Root/split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/rr_steering_wheel_link",
+        "child": "/Root/split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/rr_wheel_link",
+        "type": {
+          "value": "revolute"
+        },
+        "origin": {
+          "value": {
+            "p": [
+              0.0,
+              0.0,
+              -0.11999999731779099
+            ],
+            "q": [
+              1.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          }
+        },
+        "axis": {
+          "value": [
+            0.0,
+            1.0,
+            0.0
+          ]
+        },
+        "q": {
+          "value": [
+            0.0
+          ]
+        },
+        "qd": {
+          "value": [
+            0.0
+          ]
+        },
+        "dynamics": {
+          "value": {
+            "damping": 0.0
+          }
+        },
+        "actuator": {
+          "kind": "position",
+          "gains": {
+            "kp": 57.227202630809856,
+            "kv": 3.643196871205962
+          },
+          "limits": {
+            "effort": 3.4028234663852886e+38
+          }
+        },
+        "anchor": {
+          "value": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        }
+      }
+    ],
+    "couplings": [
+      {
+        "joint1": "/Root/split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/fr/link6/fr_joint8",
+        "joint2": "/Root/split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/fr/link6/fr_joint7",
+        "offset": -0.0,
+        "multiplier": -1.0
+      },
+      {
+        "joint1": "/Root/split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/fl/link6/fl_joint8",
+        "joint2": "/Root/split_aloha_mid_360_with_piper/split_aloha_mid_360_with_piper/fl/link6/fl_joint7",
+        "offset": -0.0,
+        "multiplier": -1.0
+      }
+    ]
+  },
+  "stateVars": {},
+  "existence": 1.0
+}

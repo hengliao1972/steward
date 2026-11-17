@@ -15,6 +15,12 @@ in the world.
 from __future__ import annotations
 
 import math
+from functools import lru_cache
+from pathlib import Path
+import xml.etree.ElementTree as ET
+
+import mujoco
+from scipy.spatial import ConvexHull
 
 import numpy as np
 
@@ -63,6 +69,12 @@ def _surface_points(geometry: dict, samples: int = 7) -> np.ndarray:
     size = [float(s) for s in geometry.get("size", [])]
     local: list[list[float]] = []
 
+    if kind == "mesh":
+        path = Path(geometry["ref"])
+        stat = path.stat()
+        points = _mesh_surface(str(path.resolve()), stat.st_mtime_ns, stat.st_size)
+        return points @ matrix_from_quat(quat).T + centre
+
     if kind != "primitive":
         return np.zeros((0, 3))
 
@@ -105,6 +117,19 @@ def _surface_points(geometry: dict, samples: int = 7) -> np.ndarray:
     return np.asarray([quat_rotate(quat, p) for p in points], dtype=float) + centre
 
 
+@lru_cache(maxsize=128)
+def _mesh_surface(path: str, modified: int, size: int) -> np.ndarray:
+    """Convex-hull vertices in asset coordinates; cache invalidates when the asset changes."""
+    root = ET.Element("mujoco")
+    asset = ET.SubElement(root, "asset")
+    ET.SubElement(asset, "mesh", name="part", file=path)
+    world = ET.SubElement(root, "worldbody")
+    ET.SubElement(world, "geom", type="mesh", mesh="part")
+    model = mujoco.MjModel.from_xml_string(ET.tostring(root, encoding="unicode"))
+    points = model.mesh_vert @ matrix_from_quat(model.mesh_quat[0]).T + model.mesh_pos[0]
+    return points[ConvexHull(points).vertices]
+
+
 def body_points(robot_model: dict, link_pose, samples: int = 12) -> list[tuple[str, list[np.ndarray]]]:
     """Each link's geometry as per-part surface samples in the world frame.
 
@@ -126,7 +151,7 @@ def body_points(robot_model: dict, link_pose, samples: int = 12) -> list[tuple[s
         for part in parts:
             local = _surface_points(part, samples=samples)
             if len(local):
-                world_parts.append(np.asarray([quat_rotate(quat, p) for p in local], dtype=float) + origin)
+                world_parts.append(local @ matrix_from_quat(quat).T + origin)
         if world_parts:
             out.append((link["id"], world_parts))
     return out

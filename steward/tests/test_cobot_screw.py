@@ -69,7 +69,7 @@ def test_piper_wrist_roll_stands_screwdriver_bit_down():
     import math
 
     from steward.assets.cobot import HOME, LIFT_HOME, TCP_OFFSET, cobot_magic
-    from steward.ego.cobot_arm import PiperArm
+    from steward.ego.piper_arm import PiperArm
     from steward.math3d import pose_compose, quat_rotate
 
     arm = PiperArm(cobot_magic().to_dict())

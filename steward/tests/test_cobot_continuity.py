@@ -3,7 +3,7 @@
 import pytest
 
 from steward.assets.cobot import cobot_magic
-from steward.ego.cobot_arm import PiperArm
+from steward.ego.piper_arm import PiperArm
 from steward.ego.skills import SkillFailed
 
 

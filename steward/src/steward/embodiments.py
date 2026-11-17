@@ -1,7 +1,7 @@
 """Embodiments: which robot body a scenario puts in the world, registered in one place.
 
-A scene's robot entity carries the identity of its body in ``asset.id`` and ``category`` (the
-generators publish ``steward-bot`` and ``cobot-magic``). This registry maps that id to what the
+A scene's robot entity carries the identity of its body in ``asset.id`` and ``category`` (including
+``steward-bot``, ``cobot-magic`` and the imported ``agilex-usd``). This registry maps that id to what the
 rest of the system needs to know about a body without opening its model: a label for the console,
 the ``steward`` subcommand that runs its Ego Runtime, and the five-layer profile document under
 ``steward/embodiments/``. Like :mod:`steward.phases`, one entry per implementation; a body the
@@ -25,6 +25,11 @@ EMBODIMENTS: dict[str, dict] = {
         # Its missions are clients of the Ego API (`steward chores --api`, the Ego Harness).
         "runs_mission": False,
         "skills": True,
+    },
+    "agilex-usd": {
+        "label": "AgileX USD 双 Piper",
+        "description": "robot.usd 原始网格与双臂关节；平面移动底盘、升降、双爪与仿真 RGB-D 相机",
+        "profile": "agilex-usd.yaml", "ego": "ego", "runs_mission": False, "skills": True,
     },
     "cobot-magic": {
         "label": "AgileX Cobot Magic 双 Piper",
@@ -89,6 +94,10 @@ def robot_entity(embodiment_id: str) -> dict:
         from steward.assets.generators import steward_bot
 
         return steward_bot().to_dict()
+    if embodiment_id == "agilex-usd":
+        from steward.assets.agilex import agilex_usd
+
+        return agilex_usd()
     if embodiment_id == "cobot-magic":
         from steward.assets.cobot import cobot_magic
 

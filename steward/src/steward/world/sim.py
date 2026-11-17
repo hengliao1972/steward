@@ -755,7 +755,7 @@ class WorldSim:
     def _try_attach(self, rs: _RobotState, g: _GripState, gripper_link: str) -> None:
         """Ideal grasp: attach the nearest free object within capture range of the pinch point (inside
         it, or that close to its box: a large object is taken by its edge) that has nothing resting on or
-        in it (the top of a stack) or is a pourable container (carried with what lies in it), or else
+        in it (the top of a stack) or is the rim of a pourable container (carried with what lies in it), or else
         grasp the nearest drawer handle."""
         grip = np.asarray(self.grasp_point(rs.entity_id, gripper_link)["p"])
         relations = [r for r in self._relations() if r.type == "supported-by"
@@ -777,10 +777,13 @@ class WorldSim:
                 if obb.center[2] - obb.size[2] / 2 < box.center[2] + box.size[2] / 2 - 0.01:
                     continue  # inside a closed box: the fingers meet its lid
             d = float(np.linalg.norm(np.asarray(obb.center) - grip))
-            centred = d <= self.grasp.capture_radius
+            pourable = _is_pourable(ent)
+            # A hollow container's bounding-box centre is empty space. Its rim is graspable;
+            # proximity to that centre must not outrank an object inside the container.
+            centred = not pourable and d <= self.grasp.capture_radius
             if not centred and not _at_edge(obb, grip):
                 continue
-            candidates.append((ent.id, obb, d, centred, not centred and _is_pourable(ent)))
+            candidates.append((ent.id, obb, d, centred, pourable))
         # Fingers closing on an object's middle take it before the rim of another they are near
         # (a piece in its box, not the box), but straddling the wall of a pourable container they
         # take the wall, not what lies inside it against the wall nor an object beside it they are

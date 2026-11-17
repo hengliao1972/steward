@@ -135,6 +135,8 @@ class Joint:
     dynamics: Est | None = None
     locked: Est | None = None
     actuator: dict | None = None
+    anchor: Est | None = None
+    """Joint pivot in the child link frame; absent means the child origin."""
 
     def to_dict(self) -> dict:
         return _drop_none(
@@ -151,6 +153,7 @@ class Joint:
                 "dynamics": _est_dict(self.dynamics),
                 "locked": _est_dict(self.locked),
                 "actuator": copy.deepcopy(self.actuator),
+                "anchor": _est_dict(self.anchor),
             }
         )
 
@@ -169,6 +172,7 @@ class Joint:
             dynamics=_est(d.get("dynamics")),
             locked=_est(d.get("locked")),
             actuator=copy.deepcopy(d.get("actuator")),
+            anchor=_est(d.get("anchor")),
         )
 
 
@@ -179,6 +183,8 @@ class RigidTree:
     joints: list[Joint] = field(default_factory=list)
     root_actuator: dict | None = None
     kind: str = "rigid"
+    couplings: list[dict] = field(default_factory=list)
+    """Linear joint equalities: joint1 = offset + multiplier * joint2."""
 
     def to_dict(self) -> dict:
         return _drop_none(
@@ -188,6 +194,7 @@ class RigidTree:
                 "links": [link.to_dict() for link in self.links],
                 "joints": [j.to_dict() for j in self.joints],
                 "rootActuator": copy.deepcopy(self.root_actuator),
+                "couplings": copy.deepcopy(self.couplings) or None,
             }
         )
 
@@ -198,6 +205,7 @@ class RigidTree:
             links=[Link.from_dict(x) for x in d["links"]],
             joints=[Joint.from_dict(x) for x in d.get("joints", [])],
             root_actuator=copy.deepcopy(d.get("rootActuator")),
+            couplings=copy.deepcopy(d.get("couplings", [])),
         )
 
     def link(self, link_id: str) -> Link:

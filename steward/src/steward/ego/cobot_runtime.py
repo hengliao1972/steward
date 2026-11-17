@@ -53,6 +53,7 @@ class CobotEgoRuntime:
                  mission_kwargs: dict | None = None):
         if task is not None and task not in MISSIONS:
             raise ValueError(f"unknown mission {task!r}; known: {', '.join(MISSIONS)}")
+        link.require_body("cobot-magic")
         self.link = link
         self.task = task
         self.mission_kwargs = dict(mission_kwargs or {})

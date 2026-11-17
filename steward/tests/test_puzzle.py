@@ -117,7 +117,12 @@ def test_a_pourable_box_is_grasped_with_its_contents_only_without_its_lid_and_ca
     sim.command("w:robot-1", {"gripper": "open"})
     sim.edit_move("w:lid", {"at": {"x": 2.0, "y": 1.5}})
     sim.step_seconds(0.5)
-    sim.command("w:robot-1", {"lift": box[2] + 0.025})
+    from steward.ego.esim import EsimConfig
+
+    rim = sim.entity_obb("w:box")
+    rim_x = rim.center[0] - rim.size[0] / 2 + EsimConfig().edge_grasp_inset
+    sim.command("w:robot-1", {"base": [rim_x - (0.26 + reach), box[1], 0.0],
+                              "lift": box[2] + 0.025})
     sim.step_seconds(1.0)
     sim.command("w:robot-1", {"gripper": "close"})
     sim.step_seconds(0.2)
@@ -141,7 +146,9 @@ def test_fingers_take_a_piece_beside_the_box_wall_the_box_by_its_rim_and_nothing
 
     def close_at(point) -> str | None:
         sim.grasp_point = lambda robot, gripper=None: {"p": list(point), "q": [1.0, 0.0, 0.0, 0.0]}
-        g.attached = g.handle = None
+        if g.attached is not None:
+            sim._release(rs, g)
+        g.handle = None
         sim._try_attach(rs, g, link)
         return g.attached
 
@@ -153,6 +160,11 @@ def test_fingers_take_a_piece_beside_the_box_wall_the_box_by_its_rim_and_nothing
     sim.edit_move("w:lid", {"at": {"x": 2.0, "y": 1.5}})
     sim.step_seconds(0.5)
     assert close_at(sim._entity_pose(corner)["p"]) == corner, "on a piece's middle by the wall: the piece, not the box"
+    for row in range(3):
+        for column in range(3):
+            piece_id = f'w:piece-{row}{column}'
+            assert close_at(sim._entity_pose(piece_id)['p']) == piece_id, \
+                "inside the hollow centre: the piece, not the container's bounding box"
     from steward.ego.esim import EsimConfig
 
     rim = [box.center[0] - box.size[0] / 2 + EsimConfig().edge_grasp_inset, box.center[1], box.center[2]]

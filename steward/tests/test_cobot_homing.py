@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from steward.assets.cobot import cobot_magic
-from steward.ego.cobot_arm import PiperArm, PiperArmConfig
+from steward.ego.piper_arm import PiperArm, PiperArmConfig
 from steward.ego.skills import Job, SkillExecutor, SkillFailed, SkillStopped
 
 
@@ -73,9 +73,10 @@ def test_either_occupied_gripper_prevents_both_arms_from_homing(side, attachment
     arm = PiperArm(cobot_magic().to_dict())
     feedback = Feedback(arm)
     feedback.grippers[f"{side}_link6"][attachment] = True
-    arm._target = {"lift": 0.85}
+    target = arm.joints_of(feedback.joints)
+    arm._target = dict(target)
     assert not arm.home_empty(feedback.command, feedback.tick)
-    assert not feedback.commands and arm._target == {"lift": 0.85}
+    assert not feedback.commands and arm._target == target
 
 
 def test_missing_gripper_feedback_does_not_mean_empty():

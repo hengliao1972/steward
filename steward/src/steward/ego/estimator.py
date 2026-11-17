@@ -508,7 +508,7 @@ class EgoEstimator:
             float(np.linalg.norm(centre - at) + np.linalg.norm(half)) for centre, half, _rot in self.body_boxes())
 
     def body_boxes(self) -> list[tuple[np.ndarray, np.ndarray, np.ndarray]]:
-        """``(centre, half extents, rotation matrix)`` in the map frame of every visual primitive of
+        """``(centre, half extents, rotation matrix)`` in the map frame of every visual primitive or mesh of
         the robot's own links, from odometry and joint encoders."""
         tree = self.robot_model["body"]
         children = {j["child"] for j in tree["joints"]}
@@ -519,15 +519,21 @@ class EgoEstimator:
             if joint is None:
                 raise ValueError(f"robot model joints {[j['id'] for j in pending]} hang from no reachable link")
             pending.remove(joint)
-            kind = joint["type"]["value"]
             q = float(self.joints.get(joint["id"], (joint["q"]["value"] or [0.0])[0]))
-            axis = joint.get("axis", {}).get("value", [0.0, 0.0, 1.0])
-            motion = {"p": [a * q for a in axis], "q": [1.0, 0.0, 0.0, 0.0]} if kind == "prismatic" else \
-                {"p": [0.0, 0.0, 0.0], "q": quat_from_axis_angle(axis, q) if kind == "revolute" else [1.0, 0.0, 0.0, 0.0]}
-            poses[joint["child"]] = pose_compose(pose_compose(poses[joint["parent"]], joint["origin"]["value"]), motion)
+            poses[joint["child"]] = _apply_joint(poses[joint["parent"]], joint, q)
         boxes = []
         for link in tree["links"]:
             for geom in link.get("geometry", {}).get("visual", []):
+                if geom.get("kind") == "mesh":
+                    from steward.ego.selfmask import _surface_points
+
+                    points = _surface_points(geom)
+                    lo, hi = points.min(axis=0), points.max(axis=0)
+                    link_pose = poses[link["id"]]
+                    rotation = matrix_from_quat(link_pose["q"])
+                    boxes.append((rotation @ ((lo + hi) / 2) + np.asarray(link_pose["p"]),
+                                  (hi - lo) / 2, rotation))
+                    continue
                 size = geom.get("size", [])
                 half = {"box": lambda s: [s[0] / 2, s[1] / 2, s[2] / 2], "cylinder": lambda s: [s[0], s[0], s[1] / 2],
                         "capsule": lambda s: [s[0], s[0], s[1] / 2 + s[0]], "sphere": lambda s: [s[0]] * 3}.get(geom.get("shape"))
@@ -6076,7 +6082,9 @@ def _apply_joint(pose: dict, joint: dict, q: float) -> dict:
         return {"p": [at["p"][i] + offset[i] for i in range(3)], "q": list(at["q"])}
     if kind == "revolute":
         spin = quat_from_axis_angle(axis, q)
-        return {"p": list(at["p"]), "q": quat_mul(at["q"], spin)}
+        anchor = np.asarray((joint.get("anchor") or {}).get("value", [0, 0, 0]))
+        offset = quat_rotate(at["q"], (anchor - matrix_from_quat(spin) @ anchor).tolist())
+        return {"p": [at["p"][i] + offset[i] for i in range(3)], "q": quat_mul(at["q"], spin)}
     raise ValueError(f"unsupported joint type {kind!r} for forward kinematics")
 
 

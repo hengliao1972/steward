@@ -20,6 +20,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import math
+from pathlib import Path
 import struct
 import xml.etree.ElementTree as ET
 import zlib
@@ -60,7 +61,7 @@ class MjcfBuild:
     names: dict[str, EntityNames]
     initial_qpos: dict[str, list[float]]
     assets: dict[str, bytes] = field(default_factory=dict)
-    """In-memory files the XML references (texture images)."""
+    """In-memory files the XML references (texture images and meshes)."""
     shadows: bool = False
     """Whether the renderer should cast the key light. Flat appearance leaves this off."""
     fastener_welds: dict[tuple[str, str], str] = field(default_factory=dict)
@@ -153,22 +154,26 @@ def build_mjcf(
     textures = _Textures(ET.Element("asset"))
     names: dict[str, EntityNames] = {}
     initial: dict[str, list[float]] = {}
+    equalities = ET.SubElement(root, "equality")
     for ent in scene.entities:
         if not isinstance(ent.body, RigidTree):
             raise NotImplementedError(f"entity {ent.id}: deformable bodies are not simulated in Phase 0")
         names[ent.id] = _emit_entity(world, actuators, ent, initial, textures, appearance)
+        for coupling in ent.body.couplings:
+            ET.SubElement(equalities, "joint", joint1=names[ent.id].joints[coupling["joint1"]],
+                          joint2=names[ent.id].joints[coupling["joint2"]],
+                          polycoef=_fmt([coupling["offset"], coupling["multiplier"], 0, 0, 0]))
     fastener_welds = {}
     if fasteners and scene.mode == "world":
         active = active_welds(scene)
         pairs = weld_pairs(features(scene))
         if pairs:
-            equality = ET.SubElement(root, "equality")
             for i, pair in enumerate(pairs):
                 a, b = pair
                 name = f"fastener-{i}"
                 fastener_welds[pair] = name
                 rel = active.get(pair, {"p": [0, 0, 0], "q": [1, 0, 0, 0]})
-                ET.SubElement(equality, "weld", name=name,
+                ET.SubElement(equalities, "weld", name=name,
                               body1=next(iter(names[a].bodies.values())),
                               body2=next(iter(names[b].bodies.values())),
                               active="true" if pair in active else "false",
@@ -182,6 +187,8 @@ def build_mjcf(
                     for geom in body.findall("geom"):
                         geom.set("contype", "0")
                         geom.set("conaffinity", "0")
+    if not len(equalities):
+        root.remove(equalities)
     if len(actuators) == 0:
         root.remove(actuators)
     if len(textures.element):
@@ -194,11 +201,25 @@ def build_mjcf(
 @dataclass
 class _Textures:
     """Cube textures for boxes with a top-face image: the image on +z, a plain colour elsewhere.
-    Identical images and colours share one file."""
+    Identical images and colours share one file. Referenced meshes are embedded in the build."""
 
     element: ET.Element
     files: dict[str, bytes] = field(default_factory=dict)
     materials: dict[tuple[str, tuple[float, ...]], str] = field(default_factory=dict)
+    meshes: dict[str, str] = field(default_factory=dict)
+
+    def mesh(self, ref: str) -> str:
+        """Load a local mesh once per compilation, retaining its bytes in the build."""
+        if ref not in self.meshes:
+            path = Path(ref)
+            content = path.read_bytes()
+            name = "mesh-" + hashlib.sha256(content).hexdigest() + "-" + path.suffix.lstrip(".")
+            filename = name + path.suffix
+            if filename not in self.files:
+                self.files[filename] = content
+                ET.SubElement(self.element, "mesh", name=name, file=filename)
+            self.meshes[ref] = name
+        return self.meshes[ref]
 
     def finish(self, rgba: list[float]) -> str | None:
         """Material name for a procedural finish of ``rgba``, or ``None`` when it stays flat."""
@@ -303,6 +324,8 @@ def _emit_children(parent_el: ET.Element, actuators: ET.Element, ent: Entity, pa
         if jtype != "fixed":
             jname = f"{ent.id}::{joint.id}"
             attrs = {"name": jname, "type": _JOINT_KIND[jtype]}
+            if joint.anchor is not None:
+                attrs["pos"] = _fmt(joint.anchor.value)
             if jtype != "ball":
                 attrs["axis"] = _fmt(joint.axis.value if joint.axis else _DEFAULT_AXIS[jtype])
             if joint.limits is not None:
@@ -334,6 +357,8 @@ def _emit_actuator(actuators: ET.Element, name: str, joint: str, act: dict, limi
     attrs = {"name": name, "joint": joint}
     if kind == "position":
         attrs["kp"] = f"{gains.get('kp', 100.0)}"
+        if "kv" in gains:
+            attrs["kv"] = str(gains["kv"])
         if limits is not None:
             attrs["ctrlrange"] = _fmt([limits["lo"], limits["hi"]])
         if effort is not None:
@@ -361,7 +386,13 @@ def _emit_link(body: ET.Element, ent: Entity, link_id: str, names: EntityNames, 
     collision = link.geometry.get("collision", [])
     visual = link.geometry.get("visual", [])
     mass = link.inertial.value.get("mass") if link.inertial else None
-    volumes = [_volume(g) for g in collision]
+    inertia = link.inertial.value if link.inertial else {}
+    explicit_inertia = "diagonal" in inertia
+    if explicit_inertia:
+        at = inertia["pose"]
+        ET.SubElement(body, "inertial", pos=_fmt(at["p"]), quat=_fmt(at["q"]),
+                      mass=str(mass), diaginertia=_fmt(inertia["diagonal"]))
+    volumes = [_volume(g) for g in collision] if not explicit_inertia else [0.0] * len(collision)
     total_volume = sum(volumes) or 1.0
     body_name = body.get("name")
     for k, g in enumerate(collision):
@@ -372,7 +403,9 @@ def _emit_link(body: ET.Element, ent: Entity, link_id: str, names: EntityNames, 
         if "contactTime" in material:
             # Stiffer contact (MuJoCo solref time constant): carried contents follow a moving container.
             attrs["solref"] = f"{max(float(material['contactTime']), 0.004)} 1"
-        if mass is not None:
+        if explicit_inertia:
+            attrs["mass"] = "0"
+        elif mass is not None:
             attrs["mass"] = f"{mass * volumes[k] / total_volume}"
         elif "density" in material:
             attrs["density"] = f"{material['density']}"
@@ -386,7 +419,7 @@ def _emit_link(body: ET.Element, ent: Entity, link_id: str, names: EntityNames, 
         attrs = _geom_attrs(g, textures, appearance)
         attrs.update(name=f"{body_name}::v{k}", contype="0", conaffinity="0", group="1", density="0")
         ET.SubElement(body, "geom", **attrs)
-    if not collision and mass is not None:
+    if not collision and mass is not None and not explicit_inertia:
         inertia = max(mass * 0.005, 1e-5)
         ET.SubElement(body, "inertial", pos="0 0 0", mass=f"{mass}", diaginertia=_fmt([inertia] * 3))
     for sensor in link.sensors:
@@ -400,6 +433,10 @@ def _emit_link(body: ET.Element, ent: Entity, link_id: str, names: EntityNames, 
 
 
 def _geom_attrs(g: dict, textures: _Textures, appearance: str) -> dict:
+    if g["kind"] == "mesh":
+        at = g.get("pose") or {"p": [0, 0, 0], "q": [1, 0, 0, 0]}
+        return {"type": "mesh", "mesh": textures.mesh(g["ref"]), "pos": _fmt(at["p"]),
+                "quat": _fmt(at["q"]), "rgba": _fmt(g.get("rgba", [0.7, 0.7, 0.7, 1]))}
     if g["kind"] != "primitive":
         raise NotImplementedError(f"{g['kind']} geometry is not simulated in Phase 0")
     shape, size = g["shape"], g["size"]
@@ -427,6 +464,8 @@ def _geom_attrs(g: dict, textures: _Textures, appearance: str) -> dict:
 
 
 def _volume(g: dict) -> float:
+    if g["kind"] == "mesh":
+        raise ValueError("mesh collision geometry requires explicit link mass, pose and diagonal inertia")
     s = g["size"]
     shape = g["shape"]
     if shape == "box":

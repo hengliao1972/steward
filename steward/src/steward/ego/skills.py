@@ -20,21 +20,11 @@ from typing import TYPE_CHECKING
 import numpy as np
 
 from steward.math3d import wrap_angle
+from steward.ego.motion_errors import OutOfReach, SkillFailed, SkillStopped
+from steward.ego.motion_policy import MotionPolicy, PlanarMotionPolicy
 
 if TYPE_CHECKING:
     from steward.ego.runtime import RobotLink
-
-
-class SkillStopped(Exception):
-    pass
-
-
-class SkillFailed(Exception):
-    pass
-
-
-class OutOfReach(SkillFailed):
-    """The arm cannot put its gripper where a command asks; the command was not sent."""
 
 
 @dataclass
@@ -108,11 +98,11 @@ class MotionConfig:
     a load) gets one corrected setpoint."""
     grasp_wait_s: float = 0.1
     release_wait_s: float = 0.15
-    release_joint_tol: float = 0.002
-    """How near its setpoint each arm joint comes before a place lets go: ``joint_tol`` ends a move
-    up to a centimetre short, and the load is put down where the gripper is."""
+    release_joint_tol: float = 0.01
+    """Maximum measured lift/reach error before opening, including load sag and IK residual.
+    The slide uses its centimetre motion budget; Piper profiles set their own release budget."""
     release_settle_s: float = 0.6
-    """Most robot time a place waits for its joints to come within ``release_joint_tol``; then it lets go anyway."""
+    """Robot-time budget for measured lift/reach to settle before release; expiry keeps the load held."""
     # insert_screw_into_hole: linger after open so the screw can drop into the hole, then rise
     # tip-down before any retract — a 0.15 s wait + snap retract knocks it over.
     insert_release_wait_s: float = 0.75
@@ -221,9 +211,13 @@ class SkillExecutor:
                  fasten: Callable[[Job, dict], None] | None = None,
                  verify_screw_seat: Callable[[str], tuple[bool, str]] | None = None,
                  replan_pick: Callable[[str], dict | None] | None = None,
-                 replan_insert_place: Callable[[dict], dict | None] | None = None):
+                 replan_insert_place: Callable[[dict], dict | None] | None = None,
+                 motion_policy: MotionPolicy | None = None):
         """``clock`` is the robot link whose world clock times the control ticks (one hold per job,
         ``skill/<job id>``); without it a tick sleeps ``tick_s`` of wall time.
+
+        ``motion_policy`` owns body-dependent approach, withdrawal and recovery sequences;
+        the executor supplies cancellable motion primitives and owns job state.
 
         ``closed_drawers`` lists drawers to open after a look-around, and ``drawer_plan`` returns
         the open or close plan for one of them, with the reason when there is no plan. A close may
@@ -271,6 +265,7 @@ class SkillExecutor:
         self._content_positions = content_positions
         self._resettle = resettle
         self.config = config or MotionConfig()
+        self.motion_policy = motion_policy if motion_policy is not None else PlanarMotionPolicy()
         self._ids = itertools.count(1)
         self._gentle = False  # the running plan moves a container with its contents
         self._setpoints: dict[str, float] = {}  # the last target each joint was moved to
@@ -461,17 +456,10 @@ class SkillExecutor:
             pass
 
     def _safe_retract(self) -> None:
-        """Rise ``failure_raise``, turn the wrist upright in place, then draw the arm back; each step
-        is tried even where the one before it failed."""
-        lift = self._state()["joints"].get("lift")
-        steps = [lambda: self._set_joint("lift", lift + self.config.failure_raise)] if lift is not None else []
-        steps += [lambda: self._ramp_joint("wrist_roll", 0.0, self.config.wrist_turn_s),
-                  lambda: self._set_joint("reach", self.config.retract_reach)]
-        for step in steps:
-            try:
-                step()
-            except Exception:  # noqa: BLE001 - best effort after a failure that is already reported
-                continue
+        try:
+            self.motion_policy.recover(self)
+        except SkillStopped:
+            return  # Stop recovery while preserving the skill failure already recorded.
 
     def _tick(self) -> dict:
         if self._stop.is_set():
@@ -608,17 +596,22 @@ class SkillExecutor:
                 raise SkillFailed(f"joint {name} did not reach {target:.3f} (at {q:.3f})")
 
     def _settle_for_release(self) -> None:
-        """Wait until the lift and reach are within ``release_joint_tol`` of their setpoints, for at
-        most ``release_settle_s``; a joint that stays farther (sagging under the load) does not fail the place."""
+        """Require measured lift/reach within release tolerance; missing or stalled feedback fails before opening."""
+        names = ("lift", "reach")
+        if not all(name in self._setpoints for name in names):
+            raise SkillFailed("release requires lift and reach setpoints; keeping the load held")
         t0 = self._state()["stamp"]
         self._primitive_deadline = time.monotonic() + 3600
         while True:
             st = self._tick()
-            if all(abs(st["joints"].get(name, target) - target) < self.config.release_joint_tol
-                   for name, target in self._setpoints.items() if name in ("lift", "reach")):
+            if not all(name in st["joints"] for name in names):
+                raise SkillFailed("release requires measured lift and reach; keeping the load held")
+            errors = {name: abs(st["joints"][name] - self._setpoints[name]) for name in names}
+            if all(error < self.config.release_joint_tol for error in errors.values()):
                 return
             if st["stamp"] - t0 > self.config.release_settle_s:
-                return
+                raise SkillFailed(f"release position did not settle (lift error {errors['lift']:.4f} m, "
+                                  f"reach error {errors['reach']:.4f} m); keeping the load held")
 
     def _profile(self, frac: float) -> float:
         """Share of a move done at time share ``frac``: steady, or for a gentle plan starting and
@@ -646,201 +639,16 @@ class SkillExecutor:
             self._set_joint(name, target, ramp=False)
 
     def _reach_over(self, plan: dict, xy: list[float], lift: float) -> None:
-        """Put the gripper over ``xy`` at ``lift``; with the plan's ``approachLift`` (the spot lies
-        below the rim of what holds it) the arm reaches out above the rim and goes straight down.
-
-        Lowering onto ``lift`` with the tool still tilted can leave a short dock outside the
-        workspace: back up and refresh the reach before each retry."""
-        over = plan.get("approachLift")
-        pitch = plan.get("wristPitch")
-        if over is not None and over > lift:
-            self._set_joint("lift", over)
-            self._reach_out(xy, pitch)
-        for attempt in range(9):
-            try:
-                self._set_joint("lift", lift)
-                break
-            except OutOfReach:
-                if attempt == 8:
-                    raise
-                # A deep dock approached tilted often cannot lower at that pitch: ease toward
-                # tool-down (and shorten if tool-down cannot hold the full reach) before raising.
-                pitch_now = float(self._state()["joints"].get("wrist_pitch", 0.0))
-                if abs(pitch_now) >= self.config.joint_tol:
-                    # Tool-down tops out near tool_down_reach_mid around drawer-close height; draw in
-                    # before untilting.
-                    td_cap = self.config.tool_down_reach_mid
-                    reach_now = float(self._state()["joints"].get("reach", 0.0))
-                    if reach_now > td_cap:
-                        try:
-                            self._set_joint("reach", td_cap, ramp=False)
-                        except OutOfReach:
-                            pass
-                    self._set_joint("wrist_pitch", max(0.0, abs(pitch_now) - 0.2) * (1.0 if pitch_now >= 0 else -1.0))
-                    continue
-                lift = min(1.28, lift + 0.03)
-                o = self._state()["odometry"]
-                back = (-math.cos(o["yaw"]), -math.sin(o["yaw"]))
-                self._translate_to(o["x"] + 0.04 * back[0], o["y"] + 0.04 * back[1], o["yaw"])
-                try:
-                    td_cap = self.config.tool_down_reach_mid
-                    self._set_joint("reach", max(0.05, min(td_cap, self._reach_to(xy))), ramp=False)
-                except OutOfReach:
-                    pass
-        # After approachLift: re-tilt when closePitch is positive; for tool-down closes, creep the
-        # base in instead of stretching back to the tilted dock reach (0.48 m @ 0.64 m @ pitch≈0
-        # has no IK). Cap extensions at ``tool_down_reach_mid`` so drawer-close heights stay inside
-        # the USD envelope.
-        if over is not None and over > lift:
-            close = plan.get("closePitch")
-            if close is not None and abs(float(close)) >= self.config.joint_tol:
-                try:
-                    self._reach_out(xy, float(close))
-                except OutOfReach:
-                    # 0.45 m @ ~0.64 m @ 0.70 rad often has no USD IK: rise and ease the tilt, but
-                    # keep a mild positive pitch — full untilt at mid reach sits in the tool-down hole.
-                    self._set_joint("lift", min(1.28, float(self._state()["joints"].get("lift", lift)) + 0.12))
-                    eased = max(0.25, abs(float(close)) - 0.25) * (1.0 if float(close) >= 0 else -1.0)
-                    try:
-                        self._reach_out(xy, eased)
-                    except OutOfReach:
-                        td_cap = self.config.tool_down_reach_mid
-                        self._set_joint("lift", min(1.28, float(self._state()["joints"].get("lift", lift)) + 0.08))
-                        try:
-                            self._set_joint("reach", min(td_cap, float(self._state()["joints"].get("reach", td_cap))),
-                                           ramp=False)
-                        except OutOfReach:
-                            pass
-                        self._reach_out(xy, 0.25 if float(close) >= 0 else -0.25)
-            else:
-                self._creep_to(xy, plan.get("captureRadius", 0.05),
-                              reach_cap=plan.get("closeReach", self.config.tool_down_reach_mid))
-        else:
-            self._reach_out(xy, pitch)
+        self.motion_policy.approach(self, plan, xy, lift)
 
     def _creep_to(self, xy: list[float], capture: float, reach_cap: float | None = None) -> None:
-        """Translate the base forward until the gripper is within ``capture`` of ``xy``, extending
-        the arm only as far as ``reach_cap`` (default ``tool_down_reach_mid``) allows tool-down."""
-        last = float("inf")
-        stalled = 0
-        cap = self.config.tool_down_reach_mid if reach_cap is None else float(reach_cap)
-        for _ in range(16):
-            miss = float(np.linalg.norm(self._gripper_xy() - np.array(xy)))
-            if miss <= capture:
-                return
-            if miss >= last - 0.002:
-                stalled += 1
-                if stalled >= 2:
-                    # Base blocked or TCP not tracking across two samples.
-                    return
-            else:
-                stalled = 0
-            last = miss
-            o = self._state()["odometry"]
-            forward = (math.cos(o["yaw"]), math.sin(o["yaw"]))
-            step = min(0.05, max(0.02, miss - capture + 0.01))
-            self._translate_to(o["x"] + step * forward[0], o["y"] + step * forward[1], o["yaw"])
-            self._align_lateral(xy)
-            try:
-                self._set_joint("reach", max(0.05, min(cap, self._reach_to(xy))), ramp=False)
-            except OutOfReach:
-                # Cap may still sit on a ridge at this live height: ease a centimetre shorter.
-                try:
-                    self._set_joint("reach", max(0.05, min(cap - 0.02, self._reach_to(xy))), ramp=False)
-                except OutOfReach:
-                    pass
+        self.motion_policy.creep(self, xy, capture, reach_cap)
 
     def _reach_out(self, xy: list[float], pitch: float | None) -> None:
-        """Reach the gripper out to ``xy``, tilting the tool to ``pitch`` on the way.
-
-        Prefer tilting at the current reach then extending (a synchronized reach+pitch ramp can sit
-        in the tool-down hole at half tilt). When the current reach is too short for that pitch
-        (0.28 m @ ~0.63 m @ 0.57 rad has no USD IK), extend first at the current pitch, then tilt.
-
-        A dock that lands short can put a highly tilted grasp just outside the workspace: back the
-        base up a few centimetres and try again before giving up."""
-        pitch_cmd = pitch
-        # Table picks after HOME deploy often sit near 0.81 m, where tool-down has holes around
-        # 0.22 m and 0.32–0.35 m; rise into the working / untilted-exit band before extending.
-        if pitch_cmd is None or abs(float(pitch_cmd)) < 0.15:
-            lift_now = float(self._state()["joints"].get("lift", 0.0))
-            safe = max(self.config.working_lift, self.config.untilted_exit_lift, 0.85)
-            if lift_now < safe - 0.01:
-                try:
-                    self._set_joint("lift", safe)
-                except (OutOfReach, SkillFailed):
-                    pass
-        for attempt in range(9):
-            reach = max(0.05, self._reach_to(xy))
-            joints = self._state()["joints"]
-            try:
-                if pitch_cmd is not None and abs(joints.get("wrist_pitch", 0.0) - pitch_cmd) >= self.config.joint_tol:
-                    try:
-                        self._ramp_joints({"wrist_pitch": pitch_cmd},
-                                         abs(pitch_cmd - joints.get("wrist_pitch", 0.0)) / self.config.wrist_pitch_speed)
-                    except OutOfReach:
-                        # Short retract cannot take a high pitch at mid height, and tool-down may not
-                        # reach the full dock either: step through mid reaches, then tilt, then finish.
-                        self._extend_then_tilt(reach, pitch_cmd)
-                        return
-                # Tool-down: step through envelope-safe mids so a single jump does not land in a hole.
-                if pitch_cmd is None or abs(float(pitch_cmd)) < 0.15:
-                    here = float(joints.get("reach", 0.0))
-                    td = self.config.tool_down_reach_mid
-                    mids = [r for r in (self.config.working_reach, td, max(td, 0.40), max(td, 0.44))
-                            if here + 1e-9 < r < reach - 1e-9]
-                    for mid in mids:
-                        try:
-                            self._set_joint("reach", mid, ramp=False)
-                        except OutOfReach:
-                            break
-                self._set_joint("reach", reach)
-                return
-            except OutOfReach:
-                if attempt == 8:
-                    raise
-                # Live reach past what the planned pitch covers: escalate tilt, then shorten the dock
-                # (creep in). Backing away lengthens reach and usually deepens the hole.
-                cap = self.config.wrist_pitch_max
-                if pitch_cmd is not None and cap > pitch_cmd + self.config.joint_tol:
-                    pitch_cmd = min(cap, pitch_cmd + max(0.15, (cap - pitch_cmd) * 0.5))
-                    continue
-                if pitch_cmd is None:
-                    raise
-                o = self._state()["odometry"]
-                if reach > 0.48:
-                    fwd = (math.cos(o["yaw"]), math.sin(o["yaw"]))
-                    self._translate_to(o["x"] + 0.04 * fwd[0], o["y"] + 0.04 * fwd[1], o["yaw"])
-                else:
-                    back = (-math.cos(o["yaw"]), -math.sin(o["yaw"]))
-                    self._translate_to(o["x"] + 0.04 * back[0], o["y"] + 0.04 * back[1], o["yaw"])
+        self.motion_policy.reach(self, xy, pitch)
 
     def _extend_then_tilt(self, reach: float, pitch: float) -> None:
-        """Reach ``reach`` at ``pitch`` when tilt-at-current and extend-at-current-pitch both miss.
-
-        Under the USD mounts a mid height like 0.63 m only reaches ~0.40 m tool-down, while a short
-        retract cannot hold a deep-drawer pitch: step out to a mid reach, tilt, then finish."""
-        here = float(self._state()["joints"].get("reach", 0.0))
-        td = self.config.tool_down_reach_mid
-        mids = [r for r in (td, max(td, 0.40), max(td, 0.44), max(td, 0.48))
-                if here + 1e-9 < r < reach - 1e-9]
-        last: Exception | None = None
-        for mid in mids + [reach]:
-            try:
-                self._set_joint("reach", mid)
-                joints = self._state()["joints"]
-                if abs(joints.get("wrist_pitch", 0.0) - pitch) >= self.config.joint_tol:
-                    self._ramp_joints({"wrist_pitch": pitch},
-                                     abs(pitch - joints.get("wrist_pitch", 0.0)) / self.config.wrist_pitch_speed)
-                if mid + 1e-9 < reach:
-                    self._set_joint("reach", reach)
-                return
-            except OutOfReach as exc:
-                last = exc
-                continue
-        if last is not None:
-            raise last
-        raise OutOfReach(f"cannot reach {reach:.2f} m at pitch {pitch:.2f}")
+        self.motion_policy.extend_then_tilt(self, reach, pitch)
 
     def _untilt(self) -> None:
         """Turn a tool tilted forward for a grasp back to pointing down, once the arm is retracted."""
@@ -849,35 +657,10 @@ class SkillExecutor:
             self._ramp_joints({"wrist_pitch": 0.0}, abs(pitch) / self.config.wrist_pitch_speed)
 
     def _withdraw(self, plan: dict) -> None:
-        """Retract the arm, first back up above the rim it reached over (the plan's ``approachLift``).
-
-        Tool-down tops out near 0.50 m reach under the USD mounts, so a long dock must draw back
-        while still tilted (and high enough for ``retract_reach``) before untilting."""
-        over = plan.get("approachLift")
-        if over is not None and self._state()["joints"]["lift"] < over:
-            self._set_joint("lift", over)
-        self._exit_long_reach(plan)
+        self.motion_policy.withdraw(self, plan)
 
     def _exit_long_reach(self, plan: dict) -> None:
-        """Leave a long dock without crossing the tool-down / short-retract USD holes.
-
-        Rise high enough for a tilted short retract, restore tilt if the wrist already untilted,
-        draw back to ``retract_reach``, then untilt.
-
-        FK of a settling USD posture can under-report ``wrist_pitch`` while the virtual target still
-        carries tilt: also consult ``_setpoints`` so a short retract does not keep that hidden pitch."""
-        pitch_now = abs(float(self._state()["joints"].get("wrist_pitch", 0.0)))
-        pitch_cmd = abs(float(self._setpoints.get("wrist_pitch", 0.0)))
-        plan_pitch = abs(float(plan.get("wristPitch") or 0.0))
-        need_tilt = max(pitch_now, pitch_cmd, plan_pitch) >= 0.3
-        floor = self.config.tilted_exit_lift if need_tilt else self.config.untilted_exit_lift
-        self._set_joint("lift", max(float(self._state()["joints"].get("lift", 0.0)), floor, self.config.stow_lift))
-        if need_tilt and max(pitch_now, pitch_cmd) < 0.5:
-            self._set_joint("wrist_pitch", max(plan_pitch, pitch_cmd, self.config.exit_retilt_min))
-        self._set_joint("reach", self.config.retract_reach)
-        if max(abs(float(self._state()["joints"].get("wrist_pitch", 0.0))),
-               abs(float(self._setpoints.get("wrist_pitch", 0.0)))) >= self.config.joint_tol:
-            self._untilt()
+        self.motion_policy.exit(self, plan)
 
     def _retract(self, plan: dict) -> None:
         """Bring the gripper back to the retracted reach, or only as near as the plan's ``retractReach``
@@ -907,56 +690,7 @@ class SkillExecutor:
             raise SkillStopped()
         job.log.append("docked")
         self._arm_engaged = True
-        # PARK/zero rest cannot one-shot IK to a working tip (servo stalls ~0.21 m); unfold via HOME.
-        deployed = False
-        if self._deploy_working is not None:
-            before = float(self._state()["joints"].get("reach", 0.0))
-            if self._state().get("armResting") or before < self.config.retract_reach - 0.04:
-                job.log.append(f"deploying working posture (reach was {before:.3f})")
-                self._deploy_working(self._tick)
-                # Re-assert a hole-free planar tip and sync setpoints from the live virtual joints.
-                # Leaving the arm on the HOME FK ridge (~0.21–0.32 m) makes the next handle dock
-                # settle short of its setpoint. Prefer working_reach (past the 0.32 m hole), not
-                # retract_reach which sits on that ridge.
-                tip_lift = max(self.config.working_lift, self.config.stow_lift, 0.85)
-                tip_reach = self.config.working_reach
-                self._command({"lift": tip_lift, "reach": tip_reach, "wrist_pitch": 0.0,
-                               "wrist_yaw": 0.0, "wrist_roll": 0.0})
-                self._wait(self.config.settle_s)
-                after = float(self._state()["joints"].get("reach", 0.0))
-                job.log.append(f"deployed working posture (reach now {after:.3f})")
-                self._setpoints.update({k: float(self._state()["joints"].get(k, 0.0))
-                                        for k in ("lift", "reach", "wrist_pitch", "wrist_yaw", "wrist_roll")
-                                        if k in self._state()["joints"]})
-                if after < tip_reach - 0.04:
-                    raise SkillFailed(
-                        f"arm did not leave its folded tip after deploy (reach {after:.3f})")
-                deployed = True
-        if retract:
-            # Only what the arm holds is held at the plan's tilt; an empty gripper points down.
-            # Clear ghost tilt before an empty short retract: FK can read ~0 while the virtual
-            # target still carries pitch, and 0.28 m @ mid height @ that pitch has no reliable IK.
-            held = bool(self._state()["gripper"].get("holding"))
-            parked = plan if held else {}
-            pitch_now = max(abs(float(self._state()["joints"].get("wrist_pitch", 0.0))),
-                            abs(float(self._setpoints.get("wrist_pitch", 0.0))),
-                            abs(float(parked.get("wristPitch") or 0.0)))
-            if held and pitch_now >= 0.3:
-                self._exit_long_reach({**parked, "wristPitch": parked.get("wristPitch", pitch_now)})
-            elif deployed:
-                # Just unfolded to the working tip; a further empty retract can throw the arm back
-                # onto the folded ridge (FK falls to ~0.22 m). Keep the working tip.
-                self._setpoints["wrist_pitch"] = 0.0
-                self._command({"wrist_pitch": 0.0})
-            else:
-                # Force the virtual target down even when FK already reads ~0 (otherwise a later
-                # lift/reach merge keeps the ghost pitch and hits the short-retract hole).
-                self._setpoints["wrist_pitch"] = 0.0
-                self._command({"wrist_pitch": 0.0})
-                if float(self._state()["joints"].get("reach", 0.0)) > self.config.retract_reach + 0.05:
-                    self._set_joint("lift", max(float(self._state()["joints"].get("lift", 0.0)),
-                                                self.config.untilted_exit_lift, self.config.stow_lift))
-                self._retract(parked if held else {})
+        self.motion_policy.prepare_dock(self, job, plan, retract)
 
     def _gripper_xy(self) -> np.ndarray:
         """Gripper position from the robot's own odometry and reach encoder, on the arm's line
@@ -1293,11 +1027,12 @@ class SkillExecutor:
         # Off the floor the planned height (its base at floor level) outranks the noisy live estimate.
         # An elevated drawer grasp stores its working height in plan["lift"] (via graspDz); prefer it
         # so the live centre cannot pull the tilt back into the USD hole.
-        pick_lift = plan["lift"] if plan.get("support") == "floor" else max(float(target["p"][2]), float(plan["lift"]))
+        pick_lift = (plan["lift"] if plan.get("support") == "floor" or "drawerEntry" in plan
+                     else max(float(target["p"][2]), float(plan["lift"])))
         # A tilted close at the dock reach may need a raised floor; tool-down closes (closePitch≈0)
         # keep the object's true height so the gripper does not close in air above a short bottle.
         close_pitch = abs(float(plan.get("closePitch") or 0.0))
-        if (float(plan.get("wristPitch") or 0.0) > 0.4 and plan.get("approachLift") is not None
+        if ("drawerEntry" not in plan and float(plan.get("wristPitch") or 0.0) > 0.4 and plan.get("approachLift") is not None
                 and close_pitch >= 0.15):
             pick_lift = max(pick_lift, min(float(plan["approachLift"]), float(plan.get("lift", pick_lift) + 0.12)))
         self._reach_over(plan, target["p"][:2], pick_lift)
@@ -1415,6 +1150,7 @@ class SkillExecutor:
         mild_tilt = (not pitched) and (plan_tilt > 0.2 or live_tilt > 0.2)
         carry = max(float(plan["carryLift"]),
                     self.config.tilted_carry_floor if (pitched or mild_tilt) else 0.0)
+        self.motion_policy.prepare_carry(self, plan)
         self._set_joint("lift", carry)
         if not plan.get("keepReach"):
             if pitched:
@@ -1452,94 +1188,7 @@ class SkillExecutor:
             self._translate_to(o["x"] + 0.03 * step[0], o["y"] + 0.03 * step[1], o["yaw"])
 
     def _unfurl_reach(self, xy: list[float], *, reach_cap: float | None = None) -> None:
-        """Extend toward ``xy`` through mid setpoints the USD IK holds from rest.
-
-        A resting PARK posture FK-reads ~1.74 m lift / ~0 reach: commanding only ``reach`` keeps that
-        seed height and every solve misses. Leave rest with one ``lift``+``reach`` command into the
-        hole-free band (0.85 m × 0.28 m), then step reach with a settle tol tighter than the default
-        0.10 m (which accepts the folded FK as already at retract_reach).
-
-        ``reach_cap`` limits the extension (use ~0.40 m at predock so a far handle does not ask for
-        an unreachable 0.55 m+ tip while only deploying off PARK)."""
-        tight = 0.04
-        unfurl_lift = max(self.config.stow_lift, self.config.working_lift, 0.85)
-        cap = self.config.reach_max if reach_cap is None else min(self.config.reach_max, reach_cap)
-        target = max(0.05, min(cap, self._reach_to(xy)))
-        here = float(self._state()["joints"].get("reach", 0.0))
-        # Already at the handle reach (e.g. deploy left working_reach): do not raise lift alone —
-        # that re-solve can collapse the tip back onto the HOME ridge (~0.22 m).
-        if here >= target - tight:
-            return
-        # First planar command from a folded tip must set lift and reach together (see PiperArm._solve).
-        # Dock retract can clear ``armResting`` while FK is still ~0.22 m (joint_tol 0.10 accepted it
-        # as retract_reach): still treat that as folded and re-seed.
-        first = max(self.config.retract_reach, min(target, self.config.working_reach))
-        tip_lift = float(self._state()["joints"].get("lift", 0.0))
-        # PARK FK tip ~1.74 m, or a wrist-only seed that inherited it: always re-seed lift+reach.
-        folded = (bool(self._state().get("armResting")) or here < self.config.retract_reach - 0.04
-                  or tip_lift > unfurl_lift + 0.25)
-        if folded:
-            self._setpoints["lift"] = unfurl_lift
-            self._setpoints["reach"] = first
-            self._command({"lift": unfurl_lift, "reach": first, "wrist_pitch": 0.0})
-            t0 = self._state()["stamp"]
-            while True:
-                st = self._tick()
-                if (abs(st["joints"].get("lift", 0.0) - unfurl_lift) < 0.08
-                        and abs(st["joints"].get("reach", 0.0) - first) < tight):
-                    break
-                if st["stamp"] - t0 > 20.0:
-                    raise SkillFailed(
-                        f"joint reach did not unfurl to {first:.3f} at {unfurl_lift:.2f} m "
-                        f"(at {st['joints'].get('reach', 0.0):.3f} / lift {st['joints'].get('lift', 0.0):.2f})")
-            here = float(self._state()["joints"].get("reach", 0.0))
-        else:
-            # Drawer open already lowered to the handle band: yanking lift back to the deploy tip
-            # (0.85 m) undoes that and the next mid-reach step often collapses onto the HOME ridge.
-            if tip_lift < unfurl_lift - 0.1:
-                pass
-            else:
-                self._set_joint("lift", max(tip_lift, unfurl_lift))
-        for attempt in range(6):
-            target = max(0.05, min(cap, self._reach_to(xy)))
-            here = float(self._state()["joints"].get("reach", 0.0))
-            if here >= target - tight:
-                return
-            # At handle height, step through shorter mids; the working tip band is for the deploy tip.
-            td = self.config.tool_down_reach_mid
-            mid_ladder = ((self.config.working_reach, td, max(td, 0.40), max(td, 0.44), max(td, 0.48))
-                          if float(self._state()["joints"].get("lift", 0.0)) >= unfurl_lift - 0.1
-                          else (max(0.28, td - 0.06), max(0.30, td - 0.02), td, max(td, 0.40), max(td, 0.42)))
-            mids = [r for r in mid_ladder if here + tight < r < target - tight]
-            last_err: Exception | None = None
-            for mid in mids + [target]:
-                try:
-                    self._set_joint("reach", mid, ramp=False, timeout=16.0, tol=tight)
-                    here = float(self._state()["joints"].get("reach", 0.0))
-                    last_err = None
-                except (SkillFailed, OutOfReach) as exc:
-                    last_err = exc
-                    break
-            here = float(self._state()["joints"].get("reach", 0.0))
-            if last_err is None and here >= target - tight:
-                return
-            # A mid step can collapse back onto the folded HOME ridge (~0.21 m): re-seed lift+reach
-            # before the next attempt instead of walking the base with a dead tip.
-            if here < self.config.retract_reach - 0.04:
-                self._setpoints["lift"] = unfurl_lift
-                self._setpoints["reach"] = first
-                self._command({"lift": unfurl_lift, "reach": first, "wrist_pitch": 0.0})
-                self._wait(self.config.settle_s)
-            if attempt == 5:
-                if last_err is not None:
-                    raise last_err
-                raise SkillFailed(f"joint reach did not reach {target:.3f} (at {here:.3f})")
-            if last_err is None and here >= target - tight:
-                return
-            o = self._state()["odometry"]
-            fwd = (math.cos(o["yaw"]), math.sin(o["yaw"]))
-            self._translate_to(o["x"] + 0.03 * fwd[0], o["y"] + 0.03 * fwd[1], o["yaw"])
-            self._align_lateral(xy)
+        self.motion_policy.unfurl(self, xy, reach_cap=reach_cap)
 
     def _place(self, job: Job, plan: dict) -> None:
         # Flip-in-air: keep the planned release lift (turn_over already chose the lowest safe drop).
@@ -1674,21 +1323,7 @@ class SkillExecutor:
                     self._set_joint("wrist_yaw", 0.0)
                 self._backoff(plan)
             else:
-                reach_now = float(self._state()["joints"].get("reach", 0.0))
-                try:
-                    self._set_joint("reach", max(self.config.retract_reach, reach_now - 0.22), ramp=False)
-                except (SkillFailed, OutOfReach):
-                    try:
-                        self._set_joint("reach", self.config.retract_reach, ramp=False)
-                    except (SkillFailed, OutOfReach):
-                        pass
-                self._exit_long_reach(plan)
-                if "wristRoll" in plan and abs(float(self._state()["joints"].get("wrist_roll", 0.0))) >= self.config.joint_tol:
-                    self._set_joint("wrist_roll", 0.0)
-                self._set_joint("lift", self.config.stow_lift)
-                if "wristYaw" in plan:
-                    self._set_joint("wrist_yaw", 0.0)
-                self._backoff(plan)
+                self.motion_policy.after_place(self, plan)
         except (SkillFailed, OutOfReach) as exc:
             job.log.append(f"exit after place: {exc}")
             try:
@@ -1840,139 +1475,7 @@ class SkillExecutor:
         """Grasp a drawer handle, move the base along the drawer axis to slide it, release and back away."""
         self._dock(job, plan)
         handle = plan["handle"]
-        self._align_lateral(handle[:2])
-        # Lower at a short tip, then extend in the handle band. One-shot 0.85→0.65 at
-        # ``working_reach`` (~0.40 m) crosses mid-height holes and leaves FK on the folded ridge
-        # (~0.22 m); the next ``_set_joint(reach, ~0.41)`` then fails with "joint reach did not
-        # reach". ``tool_down_reach_mid`` is clear across the drawer-close heights.
-        grip_lift = max(float(handle[2]), self.config.handle_lift_floor)
-        work_lift = max(self.config.working_lift, self.config.stow_lift, 0.85)
-        # Lower in the 0.36–0.42 m band (clear at every 0.05 m step from 0.85→0.65). Prefer the
-        # live tip after deploy (~working_reach) over yanking to exact 0.36 — the servo often keeps
-        # ~0.41 m, and a strict 0.05 m hold then fails as "lower-0.65 tip did not hold (0.69/0.41)".
-        short_lo, short_hi = 0.36, 0.42
-
-        def _hold_tip(lift: float, reach: float, label: str, *, reach_tol: float = 0.08) -> None:
-            self._setpoints["lift"] = lift
-            self._setpoints["reach"] = reach
-            self._command({"lift": lift, "reach": reach, "wrist_pitch": 0.0})
-            self._wait(self.config.settle_s)
-            live = self._state()["joints"]
-            live_reach = float(live.get("reach", 0.0))
-            if abs(float(live.get("lift", 0.0)) - lift) > 0.12:
-                raise SkillFailed(f"{label} tip did not hold ({live.get('lift', 0.0):.2f}/"
-                                  f"{live_reach:.2f})")
-            if live_reach < self.config.retract_reach - 0.04:
-                raise SkillFailed(f"{label} reach collapsed ({live_reach:.2f})")
-            if abs(live_reach - reach) > reach_tol and not (short_lo - 0.02 <= live_reach <= short_hi + 0.02):
-                raise SkillFailed(f"{label} tip did not hold ({live.get('lift', 0.0):.2f}/"
-                                  f"{live_reach:.2f})")
-
-        def _reseed_short() -> None:
-            if self._deploy_working is not None and (
-                    self._state().get("armResting")
-                    or float(self._state()["joints"].get("reach", 0.0)) < self.config.retract_reach - 0.04):
-                self._deploy_working(self._tick)
-            tip = min(short_hi, max(short_lo, float(self._state()["joints"].get("reach", short_lo))))
-            _hold_tip(work_lift, tip, "short-working")
-
-        def _step_lower(reach: float) -> None:
-            level = float(self._state()["joints"].get("lift", work_lift))
-            while level > grip_lift + 0.03:
-                level = max(grip_lift, level - 0.05)
-                # Keep commanding the live tip's reach so a 0.41 m FK is not forced back to 0.36.
-                tip = min(short_hi, max(short_lo, float(self._state()["joints"].get("reach", reach))))
-                _hold_tip(level, tip, f"lower-{level:.2f}")
-            tip = min(short_hi, max(short_lo, float(self._state()["joints"].get("reach", reach))))
-            _hold_tip(grip_lift, tip, "handle-short")
-
-        live0 = float(self._state()["joints"].get("reach", short_lo))
-        short = min(short_hi, max(short_lo, live0 if live0 >= short_lo - 0.02 else short_lo))
-        try:
-            _hold_tip(work_lift, short, "short-working")
-        except (OutOfReach, SkillFailed):
-            _reseed_short()
-            short = min(short_hi, max(short_lo, float(self._state()["joints"].get("reach", short_lo))))
-        # Creep in so the handle only needs a short-to-mid tip after the lower.
-        for _ in range(12):
-            need = max(0.05, self._reach_to(handle[:2]))
-            if need <= short_hi + 0.02:
-                break
-            o = self._state()["odometry"]
-            fwd = (math.cos(o["yaw"]), math.sin(o["yaw"]))
-            self._translate_to(o["x"] + 0.03 * fwd[0], o["y"] + 0.03 * fwd[1], o["yaw"])
-            self._align_lateral(handle[:2])
-        short = min(short_hi, max(short_lo, float(self._state()["joints"].get("reach", short))))
-        try:
-            _step_lower(short)
-        except (OutOfReach, SkillFailed) as exc:
-            job.log.append(f"handle lower failed ({exc}); reseed and retry")
-            _reseed_short()
-            short = min(short_hi, max(short_lo, float(self._state()["joints"].get("reach", short_lo))))
-            _step_lower(short)
-        self._align_lateral(handle[:2])
-        # Extend at grip height. If FK collapsed, reseed short tip before asking for more reach.
-        target = max(0.05, min(0.44, self._reach_to(handle[:2])))
-        here = float(self._state()["joints"].get("reach", 0.0))
-        if here < self.config.retract_reach - 0.04:
-            _reseed_short()
-            try:
-                _hold_tip(grip_lift, short, "handle-after-collapse")
-            except (OutOfReach, SkillFailed):
-                pass
-            here = float(self._state()["joints"].get("reach", 0.0))
-        for mid_r in [r for r in (short, 0.38, 0.40, 0.42) if here + 0.02 < r < target - 0.02] + [target]:
-            try:
-                self._setpoints["lift"] = float(self._state()["joints"].get("lift", grip_lift))
-                self._setpoints["reach"] = mid_r
-                self._command({"lift": self._setpoints["lift"], "reach": mid_r, "wrist_pitch": 0.0})
-                self._wait(min(self.config.settle_s, 1.5))
-                here = float(self._state()["joints"].get("reach", 0.0))
-                if here < mid_r - 0.05:
-                    raise SkillFailed(f"joint reach did not reach {mid_r:.3f} (at {here:.3f})")
-            except (SkillFailed, OutOfReach):
-                o = self._state()["odometry"]
-                fwd = (math.cos(o["yaw"]), math.sin(o["yaw"]))
-                self._translate_to(o["x"] + 0.03 * fwd[0], o["y"] + 0.03 * fwd[1], o["yaw"])
-                self._align_lateral(handle[:2])
-                if float(self._state()["joints"].get("reach", 0.0)) < self.config.retract_reach - 0.04:
-                    _reseed_short()
-                    try:
-                        _hold_tip(grip_lift, short, "handle-reseed")
-                    except (OutOfReach, SkillFailed):
-                        pass
-                break
-        capture = float(plan.get("captureRadius", 0.05))
-        # Cap tip while creeping the base in: USD tool-down holes above ~0.44 m at grip height.
-        tip_cap = 0.44
-        for _ in range(8):
-            miss = float(np.linalg.norm(self._gripper_xy() - np.array(handle[:2])))
-            if miss <= capture:
-                break
-            o = self._state()["odometry"]
-            fwd = (math.cos(o["yaw"]), math.sin(o["yaw"]))
-            self._translate_to(o["x"] + 0.03 * fwd[0], o["y"] + 0.03 * fwd[1], o["yaw"])
-            self._align_lateral(handle[:2])
-            try:
-                self._set_joint("reach", max(0.05, min(tip_cap, self._reach_to(handle[:2]))),
-                                ramp=False, timeout=12.0, tol=0.04)
-            except (SkillFailed, OutOfReach):
-                pass
-        miss = float(np.linalg.norm(self._gripper_xy() - np.array(handle[:2])))
-        if miss > capture:
-            self._align_lateral(handle[:2])
-            try:
-                self._set_joint("reach", max(0.05, min(tip_cap, self._reach_to(handle[:2]))),
-                                ramp=False, timeout=12.0, tol=0.04)
-            except (SkillFailed, OutOfReach):
-                pass
-            miss = float(np.linalg.norm(self._gripper_xy() - np.array(handle[:2])))
-        if miss > capture:
-            self._set_joint("lift", self.config.stow_lift)
-            self._set_joint("reach", self.config.retract_reach)
-            self._backoff(plan)
-            raise SkillFailed(f"gripper is {miss * 100:.0f} cm from the handle of {plan['drawer']}; not closing")
-        reach = max(0.05, min(tip_cap, self._reach_to(handle[:2])))
+        grip_lift, tip_cap, reach = self.motion_policy.approach_handle(self, job, plan)
         # Brief pause so the USD TCP can catch the planar tip before attach (sim capture is 6 cm).
         # Do not wait a full settle_s here: that alone blew the 150 s skill wait on drawer open.
         self._wait(min(0.45, self.config.settle_s))
@@ -2068,7 +1571,9 @@ class SkillExecutor:
                 f" gripper ({grip[0]:.2f}, {grip[1]:.2f})")
         job.log.append(f"grasped the handle of {plan['drawer']}")
         start = self._state()["odometry"]
-        self._translate_to(plan["end"][0], plan["end"][1], plan["yaw"], self.config.drawer_speed)
+        travel = plan['distance'] * plan['direction']
+        self._translate_to(start['x'] + travel * plan['axis'][0], start['y'] + travel * plan['axis'][1],
+                           plan["yaw"], self.config.drawer_speed)
         end = self._state()["odometry"]
         self._command({"gripper": "open"})
         self._wait(self.config.handle_release_wait_s)
@@ -2077,11 +1582,7 @@ class SkillExecutor:
             self._shift(plan["drawer"], [moved * plan["axis"][0], moved * plan["axis"][1], 0.0])
         verb = "opened" if plan["direction"] > 0 else "closed"
         job.log.append(f"{verb} {plan['drawer']} by {abs(moved) * 100:.0f} cm")
-        # Rise before drawing back: at the handle height a Cobot tool-down posture cannot hold the
-        # retracted reach (measured: 0.15 m at 0.61 m is out of the USD workspace).
-        self._set_joint("lift", self.config.stow_lift)
-        self._set_joint("reach", self.config.retract_reach)
-        self._translate_to(plan["viewing"][0], plan["viewing"][1], plan["yaw"])
+        self.motion_policy.after_handle(self, plan)
         job.message = f"{verb} {plan['drawer']}"
         return moved
 

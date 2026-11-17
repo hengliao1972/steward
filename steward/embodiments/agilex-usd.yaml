@@ -1,0 +1,26 @@
+# Simulation profile for the imported robot.usd; executable settings live in the TOML file.
+id: agilex-usd
+display: AgileX USD dual Piper
+configuration: config/agilex-usd.toml
+mechanical:
+  source: assets/agilex/runtime/template.json
+  base: planar x/y/yaw position control; wheel joints fixed
+  arms: USD follower arms fl/fr mapped to L/R; original transforms and limits
+  torso: {joint: lift, range_m: [-0.6, 0.0], home_m: -0.45}
+  grippers: parallel fingers; original mimic coupling; ideal attachment in phase0
+sensors:
+  mount_link: top_camera_link
+  cameras: [head_camera, wide_camera]
+  calibration: simulated RGB-D rig; moves with the source lifting carriage
+self_model:
+  kinematics: imported USD, including hinge pivots and link inertias
+  collision: convex mesh hulls for chassis, carriage and arm links 1–5
+  ik: mink; left Piper and torso lift driven by the shared Ego Runtime
+control_face:
+  runtime: ego
+  skills: shared ESim receipts and skills; navigation, pick and place exercised in cobot-table
+limitations:
+  - Wheel rolling and steering dynamics are not simulated.
+  - Camera intrinsics, servo gains and repaired inertias are simulation parameters.
+  - USD materials and texture networks are not transferred.
+  - This profile does not enable real-hardware control.

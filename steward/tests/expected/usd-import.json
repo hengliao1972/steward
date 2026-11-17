@@ -1,0 +1,8 @@
+{
+  "links": 2,
+  "joints": 1,
+  "meshes": 0,
+  "actuators": 1,
+  "couplings": 0,
+  "sizeMeters": [0.7, 0.2, 0.2]
+}

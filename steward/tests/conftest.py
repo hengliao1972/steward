@@ -1,11 +1,23 @@
 from __future__ import annotations
 
 import math
+import os
 
 import numpy as np
 import pytest
 
 from steward.authoring.service import AuthoringService, build_default_kitchen
+
+
+@pytest.fixture(scope='module', params=[
+    'cobot-magic',
+    pytest.param('agilex-usd', marks=pytest.mark.skipif(
+        os.environ.get('STEWARD_TEST_AGILEX_USD') != '1',
+        reason='long-running real-mesh task; set STEWARD_TEST_AGILEX_USD=1')),
+])
+def piper_body(request):
+    """Formal body entry for shared task tests; actual USD assets are explicitly enabled."""
+    return request.param
 
 
 @pytest.fixture(scope="session")

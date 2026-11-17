@@ -6,6 +6,7 @@ requires-python = ">=3.11"
 dependencies = [
   "mujoco>=3.3",
   "numpy>=1.26",
+  "scipy>=1.11",  # cached mesh convex hulls for robot self-masking
   "pillow>=10.0",
   "mink>=1.3",  # 6-DoF arm IK on the robot's own model (PyRoki refuses 6-DoF)
   "zstandard>=0.23",  # DSH session files, without a zstd executable on PATH
@@ -13,6 +14,7 @@ dependencies = [
 
 [project.optional-dependencies]
 providers = ["requests>=2.31"]
+usd = ["mujoco==4.0.0", "mujoco-usd==4.0.0"]
 
 [project.scripts]
 steward = "steward.cli:main"

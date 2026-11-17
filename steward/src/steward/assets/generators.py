@@ -108,7 +108,7 @@ def sideboard(width: float = 1.4, depth: float = 0.45, height: float = 0.85, dra
             primitive("box", [depth + 0.02, width + 0.02, top], pose([0, 0, height - top / 2]), WALNUT_DARK),
         ]
         link = Link(id="body", name="sideboard", geometry={"collision": geoms}, affordances=[exact("support-surface")])
-    return _entity("sideboard", "object", "fixed", [link])
+        return _entity("sideboard", "object", "fixed", [link])
     wall = 0.02
     lower_top = height - top - drawer_height
     side_w = (width - drawer_width) / 2

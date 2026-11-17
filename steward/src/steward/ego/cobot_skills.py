@@ -31,6 +31,7 @@ from typing import Callable
 
 from steward.assets.cobot import HOME, LIFT_RANGE, TCP_OFFSET, park
 from steward.ego.ik import CobotIK, IkError
+from steward.embodiments import embodiment_of
 from steward.math3d import pose_compose, quat_from_axis_angle, wrap_angle
 
 ARM_OF_GRIPPER = {"L_link6": "L", "R_link6": "R"}
@@ -96,6 +97,8 @@ class CobotSkills:
         self._command = command
         self._state = state
         self.ik = ik if ik is not None else CobotIK()
+        if embodiment_of(self.ik.robot) != "cobot-magic":
+            raise ValueError("CobotSkills supports only cobot-magic; use the shared EgoRuntime for agilex-usd")
         self.config = config or MotionConfig()
         self._on_error = on_error
         self._on_finish = on_finish

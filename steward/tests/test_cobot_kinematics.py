@@ -9,7 +9,7 @@ import numpy as np
 import pytest
 
 from steward.assets.cobot import cobot_magic
-from steward.ego.cobot_arm import PiperArm
+from steward.ego.piper_arm import PiperArm
 from steward.math3d import matrix_from_quat, quat_from_axis_angle, quat_from_yaw, quat_normalize
 from steward.scene.mjcf import build_mjcf
 from steward.scene.schema import SceneState, exact, pose

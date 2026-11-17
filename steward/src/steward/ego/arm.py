@@ -6,7 +6,7 @@ height ``lift`` above the floor; ``wrist_yaw`` turns what the gripper holds abou
 ``wrist_roll`` tips it about the forward axis. A body supplies those four virtual joints from its
 own encoders (:meth:`Arm.virtualize`) and turns commands on them into commands for its own
 actuators (:meth:`Arm.command`). For the kitchen robot both are its real joints; a body with a
-6-DoF arm solves inverse kinematics instead (:mod:`steward.ego.cobot_arm`).
+6-DoF arm solves inverse kinematics instead (:mod:`steward.ego.piper_arm`).
 
 Such an arm may also tilt its tool forward, ``wrist_pitch`` about the lateral axis
 (``ArmGeometry.wrist_pitch_max``; the kitchen robot's gripper always points down): the tool comes
@@ -20,6 +20,8 @@ from __future__ import annotations
 import math
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
+
+from steward.ego.motion_policy import MotionPolicy, PlanarMotionPolicy
 
 VIRTUAL_JOINTS = ("lift", "reach", "wrist_yaw", "wrist_roll", "wrist_pitch")
 
@@ -46,13 +48,14 @@ class Arm:
     """The kitchen robot's own arm: lift, reach slide and a two-axis wrist are real joints, so the
     planar arm is the body itself."""
 
-    def __init__(self, geometry: ArmGeometry):
+    def __init__(self, geometry: ArmGeometry, motion_policy: MotionPolicy | None = None):
         self.geometry = geometry
+        self.motion_policy = motion_policy if motion_policy is not None else PlanarMotionPolicy()
 
     def virtualize(self, state: dict) -> dict:
         """``state`` (a sensor header: odometry, joints, gripper or grippers) in planar-arm terms:
         ``joints`` holds the four virtual joints, ``gripper`` the arm's gripper, ``toolOffset`` /
-        ``armLateral`` its geometry, and ``armResting`` whether the arm stands in a rest posture
+        ``armLateral`` its lateral TCP position (fixed geometry for a slide), and ``armResting`` whether the arm stands in a rest posture
         outside the planar arm's workspace (the next command takes it straight there). Remembers the
         header for :meth:`command`."""
         joints = state.get("joints") or {}
@@ -111,6 +114,13 @@ class Arm:
         turned and tipped so: none where it holds it pointing down, else a little more than the least
         that does (the body's margin); None where no tilt does. A tool that always points down: 0."""
         return 0.0 if self.reachable(lift, reach, wrist_yaw, wrist_roll) else None
+
+    def min_lift_for(self, reach: float, wrist_pitch: float = 0.0, *,
+                     wrist_yaw: float = 0.0, lo: float | None = None, hi: float | None = None) -> float | None:
+        """Lowest reachable TCP height within optional ``lo``/``hi`` bounds; None if unreachable."""
+        low = max(self.geometry.lift_min, lo) if lo is not None else self.geometry.lift_min
+        high = min(self.geometry.lift_max, hi) if hi is not None else self.geometry.lift_max
+        return low if low <= high and self.reachable(low, reach, wrist_yaw=wrist_yaw, wrist_pitch=wrist_pitch) else None
 
     def reachable_path(self, targets: Sequence[dict], *, start_joints: dict | None = None) -> bool:
         """Whether the arm can move its grasp point through ``targets`` (virtual joints; turn, tip
