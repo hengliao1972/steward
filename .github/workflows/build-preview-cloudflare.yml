@@ -34,6 +34,8 @@ env:
 
 jobs:
   preview:
+    # The preview belongs to DeepSeek Harness; Steward forks only run their Python CI.
+    if: github.repository == 'deepseek-harness/deepseek-harness'
     # The required outcome is the build, which runs four TypeScript programs
     # (Host and Client package compilation, then each face's aggregate test and
     # script check) after the Typert pass. Publishing is best effort: transport,

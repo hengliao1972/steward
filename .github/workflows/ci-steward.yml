@@ -1,0 +1,103 @@
+name: Steward CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+    types: [opened, synchronize, reopened, ready_for_review]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: steward-ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  steward-tests:
+    name: steward checks passed
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    defaults:
+      run:
+        shell: bash
+        working-directory: steward
+    env:
+      MUJOCO_GL: osmesa
+      PYOPENGL_PLATFORM: osmesa
+      LIBGL_ALWAYS_SOFTWARE: "1"
+      PYTHONFAULTHANDLER: "1"
+      PYTHONUNBUFFERED: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # test_console_navigation.py invokes the shipped Node test runner.
+      - uses: actions/setup-node@v7.0.0
+        with:
+          node-version: "24"
+          package-manager-cache: false
+
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          version: "0.11.23"
+          python-version: "3.11"
+
+      - name: Install CPU rendering libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libosmesa6 libgl1 libegl1 libglfw3
+
+      - name: Install locked Steward dependencies
+        run: uv sync --locked --group dev
+
+      - name: Verify CPU offscreen rendering
+        run: |
+          uv run --locked python - <<'PY'
+          import mujoco
+
+          model = mujoco.MjModel.from_xml_string(
+              '<mujoco><worldbody><geom type="sphere" size="0.1"/></worldbody></mujoco>'
+          )
+          data = mujoco.MjData(model)
+          mujoco.mj_forward(model, data)
+          with mujoco.Renderer(model, height=64, width=64) as renderer:
+              renderer.update_scene(data)
+              image = renderer.render()
+              assert image.shape == (64, 64, 3), image.shape
+          PY
+
+      - name: Run all Steward tests with coverage
+        env:
+          COVERAGE_FILE: ${{ runner.temp }}/steward-test-results/.coverage
+        run: |
+          report_dir="$RUNNER_TEMP/steward-test-results"
+          mkdir -p "$report_dir"
+          uv run --locked python -m pytest tests -ra --durations=25 \
+            --cov=steward --cov-branch --cov-report=term-missing \
+            --cov-report=xml:"$report_dir/coverage.xml" \
+            --cov-report=html:"$report_dir/htmlcov" \
+            --junitxml="$report_dir/pytest.xml" \
+            2>&1 | tee "$report_dir/pytest.log"
+
+      - name: Summarize Steward coverage
+        if: ${{ always() }}
+        env:
+          COVERAGE_FILE: ${{ runner.temp }}/steward-test-results/.coverage
+        run: |
+          if [ -f "$COVERAGE_FILE" ]; then
+            uv run --locked python -m coverage report --format=markdown >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload Steward test reports
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: steward-test-results
+          path: ${{ runner.temp }}/steward-test-results/
+          if-no-files-found: warn
+          retention-days: 7

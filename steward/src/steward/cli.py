@@ -34,6 +34,7 @@ from steward.world.chat import TURN_BUDGET_S
 STEWARD_DIR = Path(__file__).resolve().parents[2]
 DEFAULT_ROOT = STEWARD_DIR / "var" / "steward"
 SEGMENTATION_CONFIG = STEWARD_DIR / "config" / "segmentation.toml"
+LOCALIZATION_CONFIG = STEWARD_DIR / "config" / "localization.toml"
 MISNAMES_CONFIG = STEWARD_DIR / "config" / "misnames.toml"
 
 # The Cobot Magic twin keeps its own ports: the kitchen scenario owns 7400/7410, and two worlds
@@ -108,6 +109,7 @@ def _host(args, run_dir: Path, start: bool = True):
                        pause_on_perception_fault=getattr(args, "pause_on_perception_fault", False),
                        freeze_idle=args.freeze_idle, body=getattr(args, "body", None),
                        dispatch_task=getattr(args, "dispatch_task", False),
+                       odom_drift=getattr(args, "odom_drift", False),
                        misnames=load_misnames(args.misnames_config) if getattr(args, "misnames_config", "") else None)
     return host.start() if start else host
 
@@ -184,13 +186,16 @@ def _segmenter(config: str, root: str):
 
 
 def _start_ego(robot_url: str, api_port: int, out_dir: Path, bind_wait_s: float = 0.0, segmenter=None,
-               body: str = "steward-bot"):
+               body: str = "steward-bot", localization_config: str | None = None, localization_apply: bool = False):
     from steward.ego.bodies import body_arm, robot_model, runtime_config
     from steward.ego.runtime import EgoRuntime, RobotLink
     from steward.ego.server import ego_api
 
     model = robot_model(body)
-    runtime = EgoRuntime(RobotLink(robot_url), model, runtime_config(body), out_dir=out_dir, segmenter=segmenter,
+    config = runtime_config(body)
+    config.localization_config = localization_config
+    config.localization_apply = localization_apply
+    runtime = EgoRuntime(RobotLink(robot_url), model, config, out_dir=out_dir, segmenter=segmenter,
                          arm=body_arm(body, model))
     runtime.start()
     api = ego_api(runtime, port=api_port, bind_wait_s=bind_wait_s).start()
@@ -200,7 +205,8 @@ def _start_ego(robot_url: str, api_port: int, out_dir: Path, bind_wait_s: float 
 def cmd_ego(args) -> int:
     out_dir = Path(args.out_dir) if args.out_dir else Path(args.root) / "ego" / "observations"
     runtime, api = _start_ego(args.robot_url, args.api_port, out_dir, args.bind_wait,
-                              _segmenter(args.segmentation_config, args.root), body=args.body)
+                              _segmenter(args.segmentation_config, args.root), body=args.body,
+                              localization_config=args.localization_config, localization_apply=args.apply_localization)
     print(json.dumps({"egoApi": api.url, "robot": args.robot_url}), flush=True)
     if args.parent_pid:
         _exit_with_parent(args.parent_pid)
@@ -272,6 +278,8 @@ class _EgoProcess:
         self.task = task
         self.mission_config = dict(mission_config or {})
         body = EMBODIMENTS[embodiment]
+        if getattr(args, "localization_config", None) and body["ego"] != "ego":
+            raise ValueError("segmented-depth localization requires the shared Ego Runtime")
         cmd = [sys.executable, "-m", "steward.cli", "--root", str(args.root), body["ego"],
                "--robot-url", robot_url, "--api-port", str(api_port), "--out-dir", str(out_dir),
                "--parent-pid", str(os.getpid()), "--bind-wait", str(args.bind_wait)]
@@ -281,6 +289,10 @@ class _EgoProcess:
             cmd += ["--mission-config", json.dumps(self.mission_config, ensure_ascii=False)]
         if body["ego"] == "ego":  # the shared runtime segments by itself and drives the named body
             cmd += ["--segmentation-config", args.segmentation_config, "--body", embodiment]
+            if getattr(args, "localization_config", None):
+                cmd += ["--localization-config", args.localization_config]
+            if getattr(args, "apply_localization", False):
+                cmd += ["--apply-localization"]
         # The child writes its piped stdout in the locale encoding (GBK on Chinese Windows) unless told
         # otherwise; the reader decodes UTF-8, so a locale decode error cannot kill it and backpressure the child.
         self.proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, text=True, encoding="utf-8",
@@ -987,6 +999,8 @@ def main(argv: list[str] | None = None) -> int:
         p.add_argument("--misnames-config", default=str(MISNAMES_CONFIG),
                        help="names the ideal detections report instead of true categories at the phase0-misnamed level; '' disables it")
         if not in_process:
+            p.add_argument("--odom-drift", action="store_true",
+                           help="inject 1%% translation scale error and 0.005 rad/m heading drift")
             p.add_argument("--bind-wait", type=float, default=10.0,
                            help="seconds to wait for a fixed port still held by a service that just stopped")
             p.add_argument("--body", choices=list(EMBODIMENTS), default=None,
@@ -1016,6 +1030,13 @@ def main(argv: list[str] | None = None) -> int:
         if name != "world":
             p.add_argument("--segmentation-config", default=str(SEGMENTATION_CONFIG),
                            help="robot-side segmenter settings, used at phase levels without world masks; '' disables it")
+        if name == "up":
+            p.add_argument("--localization-experiment", action="store_true",
+                           help="enable cumulative odometry drift and fused localization feedback")
+            p.add_argument("--localization-config", default=None,
+                           help="opt-in segmented-depth CPU localization TOML; diagnostic unless --apply-localization")
+            p.add_argument("--apply-localization", action="store_true",
+                           help="apply the localization pose to Ego-State and control; uses the default TOML if omitted")
         if name == "chores":
             p.add_argument("--rounds", type=int, default=1, help="number of rounds; 0 repeats until Ctrl-C")
             p.add_argument("--api", help="Ego API of a running `steward up`; omit to run in-process")
@@ -1050,6 +1071,10 @@ def main(argv: list[str] | None = None) -> int:
         p.add_argument("--bind-wait", type=float, default=10.0,
                        help="seconds to wait for a fixed port still held by a service that just stopped")
         if name == "ego":
+            p.add_argument("--localization-config", default=None,
+                           help="opt-in segmented-depth CPU localization TOML; diagnostic unless --apply-localization")
+            p.add_argument("--apply-localization", action="store_true",
+                           help="apply the localization pose to Ego-State and control; uses the default TOML if omitted")
             p.add_argument("--segmentation-config", default=str(SEGMENTATION_CONFIG),
                            help="robot-side segmenter settings, used at phase levels without world masks; '' disables it")
             p.add_argument("--body", choices=list(EMBODIMENTS), default="steward-bot",
@@ -1068,6 +1093,10 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--no-check", action="store_true", help="only list the services, without contacting them")
     p.set_defaults(fn=cmd_services)
     args = parser.parse_args(argv)
+    if getattr(args, "localization_experiment", False):
+        args.odom_drift = args.apply_localization = True
+    if getattr(args, "apply_localization", False) and args.localization_config is None:
+        args.localization_config = str(LOCALIZATION_CONFIG)
     try:
         return args.fn(args)
     except OSError as exc:

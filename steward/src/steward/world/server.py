@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import math
 import queue
+from urllib.parse import urlencode
 import threading
 import time
 from collections.abc import Callable
@@ -86,7 +87,7 @@ class StewardHost:
                  chat: ChatConfig | None = None, phase: str | None = None, fallback_phase: str = DEFAULT_PHASE,
                  bind_wait_s: float = 0.0, pause_on_perception_fault: bool = False, freeze_idle: bool = False,
                  appearance: str = "flat", misnames: dict[str, str] | None = None, body: str | None = None,
-                 dispatch_task: bool = False):
+                 dispatch_task: bool = False, odom_drift: bool = False):
         # ``phase`` pins the level for every episode; None: each scenario's declared level, or
         # ``fallback_phase`` for a scenario that declares none.
         phase_modules(phase or fallback_phase)
@@ -108,6 +109,7 @@ class StewardHost:
         self.dispatch_task = dispatch_task
         self.speed = speed
         self.freeze_idle = freeze_idle
+        self.odom_drift = odom_drift
         self.appearance = appearance
         self.seed = seed
         self.run_dir = run_dir
@@ -166,11 +168,11 @@ class StewardHost:
         self.sensor_cameras.recordings.interrupt("Scene changed; start a new RGB recording")
         if self.sim is not None:
             self.sim.stop()
+        perception = PerceptionConfig(mode=phase_modules(self.phase)["perception"],
+                                      masks=phase_modules(self.phase).get("masks", True),
+                                      misnames=self._misnames_at(self.phase))
         self.sim = WorldSim(scenario["sceneState"], speed=self.speed, seed=self.seed, freeze_idle=self.freeze_idle,
-                            appearance=self.appearance,
-                            perception=PerceptionConfig(mode=phase_modules(self.phase)["perception"],
-                                                        masks=phase_modules(self.phase).get("masks", True),
-                                                        misnames=self._misnames_at(self.phase)))
+                            appearance=self.appearance, perception=perception.with_odometry_drift(self.odom_drift))
         self.scenario = scenario
         self.embodiments = scenario_embodiments(scenario)
         self.observer.reset()
@@ -454,6 +456,8 @@ class StewardHost:
             ("GET", "/console/state"): guard(lambda q, b: console_state(self)),
             ("GET", "/console/thinking"): guard(lambda q, b: console_thinking_text(self, q.get("robot", ""), q.get("entry", ""))),
             ("GET", "/console/frame"): guard(frame),
+            ("GET", "/console/segmentation"): guard(lambda q, b: self._relay_segmentation(q)),
+            ("GET", "/console/localization"): guard(self._console_localization),
             ("GET", "/console/view"): guard(lambda q, b: self.view_state()),
             ("POST", "/console/view"): guard(lambda q, b: self.set_view(b)),
             ("GET", "/wca/status"): guard(lambda q, b: {"scenario": (self.scenario or {}).get("name"),
@@ -576,6 +580,44 @@ class StewardHost:
             return NO_CONTENT
         relayed = {k: v for k, v in headers.items() if k.startswith("X-") or k == "Cache-Control"}
         return Binary(body, headers.get("Content-Type", "image/jpeg"), relayed)
+
+    def _console_localization(self, query: dict, _body) -> dict:
+        """Pair an Ego localization preview with simulator truth on the operator port."""
+        sim = self._require_sim()
+        robot = query.get("robot", "")
+        url = self.ego_apis.get(robot)
+        if url is None:
+            return {"enabled": False}
+        params = urlencode({key: query[key] for key in ("episode", "version") if key in query})
+        try:
+            estimate = call("GET", f"{url}/ego/localization/preview?{params}", timeout=2.0)
+        except HttpError as error:
+            if error.status == 404:
+                return {"enabled": False}
+            raise
+        except OSError as error:
+            raise HttpError(502, f"the Ego API of {robot} is unreachable: {error}") from error
+        with sim.lock:
+            if self.sim is not sim or estimate.get("episode") != sim.episode:
+                return {"enabled": estimate["enabled"]}
+            truth = {"stamp": sim.time, "position": sim._entity_pose(robot)["p"][:2]}
+        return estimate | {"truth": truth}
+
+    def _relay_segmentation(self, query: dict) -> dict:
+        """Relay completed robot-side SAM previews without rendering or running inference.
+
+        :param query: Robot id, camera id and optional last displayed frame id.
+        :returns: Preview metadata and image pixels only for a changed frame.
+        """
+        robot = query.get("robot")
+        url = self.ego_apis.get(robot or "")
+        if url is None:
+            raise HttpError(404, f"no Ego API is attached for robot {robot!r}")
+        params = urlencode({k: query[k] for k in ("camera", "after") if k in query})
+        try:
+            return call("GET", f"{url}/ego/segmentation?{params}", timeout=2.0)
+        except OSError as exc:
+            raise HttpError(502, f"the Ego API of {robot} is unreachable: {exc}") from None
 
     def _set_phase_request(self, body: dict) -> dict:
         try:

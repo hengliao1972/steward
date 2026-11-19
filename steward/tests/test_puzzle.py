@@ -5,8 +5,11 @@ from __future__ import annotations
 
 import base64
 import io
+import json
 import math
+import os
 import pathlib
+import sys
 import threading
 import time
 import traceback
@@ -298,7 +301,10 @@ def test_top_face_reads_a_face_in_the_object_frame_and_hides_what_is_occluded():
 ])
 def test_the_robot_takes_off_the_lid_and_pours_the_pieces_out_onto_the_table(kitchen_root, tmp_path, scenario, side,
                                                                               lid_at, pour_at, min_out):
-    host = StewardHost(kitchen_root, scenario=scenario, speed=math.inf, seed=3, run_dir=pathlib.Path(tmp_path)).start()
+    demo_dir = os.environ.get("STEWARD_LOCALIZATION_LIVE_DEMO")
+    demo = pathlib.Path(demo_dir) if demo_dir else None
+    host = StewardHost(kitchen_root, scenario=scenario, speed=1.0 if demo else math.inf,
+                       seed=3, run_dir=pathlib.Path(tmp_path)).start()
     assert host.phase == "phase0", "the scenario declares its level"
     runtime = EgoRuntime(RobotLink(host.robot_servers["w:robot-1"].url), steward_bot().to_dict())
     api = ego_api(runtime).start()
@@ -336,10 +342,24 @@ def test_the_robot_takes_off_the_lid_and_pours_the_pieces_out_onto_the_table(kit
         finally:
             done.set()
 
-    threading.Thread(target=flow, daemon=True).start()
     try:
+        if demo is not None:
+            sim = host.sim
+            episode = sim.episode
+            sim.paused = True
+            host.attach_ego_api("w:robot-1", api.url)
+            url = f"{host.wca.url}/console?view=localization"
+            (demo / "console.json").write_text(json.dumps({"url": url}) + "\n", encoding="utf-8")
+            print(url, flush=True)
+            while sim.paused and not (demo / "stop").exists() and host.sim is sim and sim.episode == episode:
+                host.pump(0.05)
+            if (demo / "stop").exists() or host.sim is not sim or sim.episode != episode:
+                return
+        threading.Thread(target=flow, daemon=True).start()
         deadline = time.time() + 300
         while not done.is_set() and time.time() < deadline:
+            if demo is not None and ((demo / "stop").exists() or host.sim is not sim or sim.episode != episode):
+                return
             host.pump(0.05)
         if "error" in out:
             print(out["error"])
@@ -358,6 +378,12 @@ def test_the_robot_takes_off_the_lid_and_pours_the_pieces_out_onto_the_table(kit
         assert upright + sum(quat_rotate(host.sim._entity_pose(w)["q"], [0, 0, 1])[2] < -0.9 for w in out_of_box) \
             == len(out_of_box), "every poured piece lies flat, face up or down"
     finally:
+        if demo is not None and host.sim is sim and sim.episode == episode and not (demo / "stop").exists():
+            sim.paused = True
+            status = "failed" if sys.exc_info()[0] is not None else "finished"
+            (demo / "result.json").write_text(json.dumps({"status": status}) + "\n", encoding="utf-8")
+            while not (demo / "stop").exists() and host.sim is sim and sim.episode == episode:
+                host.pump(0.05)
         api.stop()
         runtime.stop()
         host.stop()

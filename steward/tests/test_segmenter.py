@@ -471,6 +471,8 @@ def test_without_world_masks_the_robot_segments_keyframes_and_alerts_on_failure(
                     and any(t.semantic_views for t in list(runtime.estimator.tracks.values())))
         assert runtime.segmentation["frames"] == stub.calls
         assert "segmentation" in runtime.summary()
+        preview = runtime.segmentation_preview.latest("head_camera")
+        assert preview is not None and preview["image"].startswith("data:image/jpeg;base64,")
         stub.fail = True
         _pump_until(host, lambda: runtime.segmentation["failures"] >= 2)
         assert sum("分割失败" in a["message"] for a in runtime.alerts) == 1, "one alert per run of failures"

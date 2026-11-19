@@ -1,0 +1,28 @@
+{
+  "scope": "Six parametrized cases passing the simulation-mask baseline; simulation semantic masks for fast localization iteration.",
+  "excluded": {
+    "mock_or_offline": "Fake actuators, planner-only and geometry-only tests do not exercise injected physical odometry or the fused control chain.",
+    "direct_physics": "Direct WorldSim commands or GT-driven targets bypass the shared runtime localization chain.",
+    "independent_cobot": "Independent Cobot controllers have a different pose/control integration and are outside this matrix.",
+    "sensor_or_host_only": "Sensor, display, reset, HTTP access and perception-only tests without a motion task are not motion success-rate cases.",
+    "localization_benchmarks": "Localization trajectory benchmarks score pose accuracy, not task success; their results remain separate."
+  },
+  "selectors": [
+    "tests/test_e2e.py::test_cup_to_table_end_to_end",
+    "tests/test_chores.py::test_a_chair_is_carried_and_put_down_on_the_floor",
+    "tests/test_chores.py::test_picking_a_chair_by_the_wall_leaves_room_to_move_and_it_can_be_put_down_in_place",
+    "tests/test_puzzle.py::test_the_robot_takes_off_the_lid_and_pours_the_pieces_out_onto_the_table[puzzle-dog-4-lid_at1-pour_at1-12]",
+    "tests/test_puzzle.py::test_pieces_dropped_behind_and_under_the_table_are_picked_off_the_floor_and_put_back",
+    "tests/test_phase.py::test_phase1_exploration_builds_an_accurate_ego_state_from_rgbd"
+  ],
+  "removedBaselineFailures": {
+    "tests/test_shuttle.py::test_shuttle_moves_objects_around_the_cycle": "Failed in the recorded original baseline; excluded before this iteration.",
+    "tests/test_chores.py::test_a_chair_blocking_the_sideboard_is_moved_out_of_the_way_before_the_drawer_swap": "Failed in the recorded original baseline; excluded before this iteration.",
+    "tests/test_chores.py::test_one_chores_round_is_confirmed_by_world_state": "Failed in the recorded original baseline; excluded before this iteration.",
+    "tests/test_puzzle.py::test_the_robot_takes_off_the_lid_and_pours_the_pieces_out_onto_the_table[puzzle-cat-3-lid_at0-pour_at0-7]": "Failed the simulation-mask baseline: a cat-puzzle piece fell off the table; removed before the final comparison."
+  },
+  "baselineEvidence": ".local-test-results/motion-control-sim-masks-20261118/raw-summary.json",
+  "experimentDate": "2026-11-18",
+  "segmentation": "Simulation instance masks with GT category labels, used only by localization; no GT robot poses or entity ids supplied.",
+  "previousBaselineEvidence": ".local-test-results/motion-control-matrix-20261117/summary.json"
+}

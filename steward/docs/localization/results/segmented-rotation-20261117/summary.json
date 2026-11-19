@@ -1,0 +1,475 @@
+[
+    {
+        "seed":  0,
+        "source":  "empty_semantic_stand_in",
+        "targetsDeg":  [
+                           200,
+                           -200,
+                           200,
+                           -200,
+                           0
+                       ],
+        "legs":  [
+                     {
+                         "targetDeg":  200,
+                         "expectedSignedTravelDeg":  200.0,
+                         "measuredSignedTravelDeg":  199.72531926808585,
+                         "endRouteSeconds":  6.849999999999413
+                     },
+                     {
+                         "targetDeg":  -200,
+                         "expectedSignedTravelDeg":  -400.0,
+                         "measuredSignedTravelDeg":  -399.9980777018594,
+                         "endRouteSeconds":  19.499999999999794
+                     },
+                     {
+                         "targetDeg":  200,
+                         "expectedSignedTravelDeg":  400.0,
+                         "measuredSignedTravelDeg":  399.9980735877651,
+                         "endRouteSeconds":  32.14999999999394
+                     },
+                     {
+                         "targetDeg":  -200,
+                         "expectedSignedTravelDeg":  -400.0,
+                         "measuredSignedTravelDeg":  -399.9980735877652,
+                         "endRouteSeconds":  44.8000000000094
+                     },
+                     {
+                         "targetDeg":  0,
+                         "expectedSignedTravelDeg":  200.0,
+                         "measuredSignedTravelDeg":  199.9980777018594,
+                         "endRouteSeconds":  51.65000000001777
+                     }
+                 ],
+        "samples":  1034,
+        "simulationSeconds":  51.65000000001777,
+        "caseWallSeconds":  6.237996999989264,
+        "trueTotalYawTravelDeg":  1599.7176218473348,
+        "trueYawWrapCrossings":  8,
+        "trueMaxDisplacementM":  0.0025819123337914225,
+        "trueFinalYawOffsetDeg":  -0.2746807319141439,
+        "observations":  52,
+        "acceptedCorrections":  0,
+        "acceptedObservationShare":  0.0,
+        "longestTimeWithoutAcceptedCorrectionS":  51.65000000001777,
+        "longestGapRouteSeconds":  [
+                                       0.0,
+                                       51.65000000001777
+                                   ],
+        "finalCorrectionAgeS":  null,
+        "reasons":  {
+                        "insufficient_points":  52
+                    },
+        "noise":  {
+                      "mode":  "rgbd",
+                      "masks":  false,
+                      "max_range":  8.0,
+                      "depth_sigma_base":  0.0012,
+                      "depth_sigma_quadratic":  0.0019,
+                      "transparent_depth_drop":  0.4,
+                      "transparent_depth_noise":  3.0,
+                      "mask_erode_prob":  0.3,
+                      "min_mask_pixels":  25,
+                      "pos_sigma_base":  0.01,
+                      "pos_sigma_per_m":  0.02,
+                      "pos_sigma_rows":  240,
+                      "size_sigma_rel":  0.03,
+                      "yaw_sigma":  0.05,
+                      "odom_pos_sigma":  0.003,
+                      "odom_yaw_sigma":  0.003,
+                      "odom_scale_error":  0.01,
+                      "odom_yaw_drift_per_m":  0.005,
+                      "confusion":  {
+                                        "cup":  [
+                                                    "bowl"
+                                                ],
+                                        "bowl":  [
+                                                     "cup"
+                                                 ]
+                                    },
+                      "confusion_prob":  0.03,
+                      "transparent_detect_prob":  0.6,
+                      "misnames":  {
+
+                                   }
+                  },
+        "rawPositionErrorMRmse":  0.004320866939726666,
+        "rawPositionErrorMP95":  0.00744312123726341,
+        "rawPositionErrorMFinal":  0.0028306053055250358,
+        "rawYawErrorDegRmse":  0.17258705199325508,
+        "rawYawErrorDegP95":  0.3245304987872912,
+        "rawYawErrorDegFinal":  0.04718902370414111,
+        "outputPositionErrorMRmse":  0.004320866939726666,
+        "outputPositionErrorMP95":  0.00744312123726341,
+        "outputPositionErrorMFinal":  0.0028306053055250358,
+        "outputYawErrorDegRmse":  0.17258705199325505,
+        "outputYawErrorDegP95":  0.32453049878727336,
+        "outputYawErrorDegFinal":  0.04718902370414111,
+        "captureWallSeconds":  1.582613200022024,
+        "segmentationWallSeconds":  0.0007096999906934798,
+        "selectionWallSeconds":  0.00025759998243302107,
+        "localizationWallSeconds":  0.005352499967557378,
+        "selectionAndLocalizationMeanMs":  0.10788653749981537,
+        "selectionAndLocalizationP95Ms":  0.14997499529272315
+    },
+    {
+        "seed":  0,
+        "source":  "sam3",
+        "targetsDeg":  [
+                           200,
+                           -200,
+                           200,
+                           -200,
+                           0
+                       ],
+        "legs":  [
+                     {
+                         "targetDeg":  200,
+                         "expectedSignedTravelDeg":  200.0,
+                         "measuredSignedTravelDeg":  199.72531926808585,
+                         "endRouteSeconds":  6.849999999999413
+                     },
+                     {
+                         "targetDeg":  -200,
+                         "expectedSignedTravelDeg":  -400.0,
+                         "measuredSignedTravelDeg":  -399.9980777018594,
+                         "endRouteSeconds":  19.499999999999794
+                     },
+                     {
+                         "targetDeg":  200,
+                         "expectedSignedTravelDeg":  400.0,
+                         "measuredSignedTravelDeg":  399.9980735877651,
+                         "endRouteSeconds":  32.14999999999394
+                     },
+                     {
+                         "targetDeg":  -200,
+                         "expectedSignedTravelDeg":  -400.0,
+                         "measuredSignedTravelDeg":  -399.9980735877652,
+                         "endRouteSeconds":  44.8000000000094
+                     },
+                     {
+                         "targetDeg":  0,
+                         "expectedSignedTravelDeg":  200.0,
+                         "measuredSignedTravelDeg":  199.9980777018594,
+                         "endRouteSeconds":  51.65000000001777
+                     }
+                 ],
+        "samples":  1034,
+        "simulationSeconds":  51.65000000001777,
+        "caseWallSeconds":  179.7471258000005,
+        "trueTotalYawTravelDeg":  1599.7176218473348,
+        "trueYawWrapCrossings":  8,
+        "trueMaxDisplacementM":  0.0025819123337914225,
+        "trueFinalYawOffsetDeg":  -0.2746807319141439,
+        "observations":  52,
+        "acceptedCorrections":  25,
+        "acceptedObservationShare":  0.4807692307692308,
+        "longestTimeWithoutAcceptedCorrectionS":  11.000000000013443,
+        "longestGapRouteSeconds":  [
+                                       39.00000000000231,
+                                       50.00000000001575
+                                   ],
+        "finalCorrectionAgeS":  0.6500000000007944,
+        "reasons":  {
+                        "map_seeded":  1,
+                        "matched":  25,
+                        "insufficient_points":  7,
+                        "insufficient_overlap":  2,
+                        "optimizer_limit":  2,
+                        "poor_alignment":  10,
+                        "degenerate_geometry":  3,
+                        "correction_at_limit":  2
+                    },
+        "noise":  {
+                      "mode":  "rgbd",
+                      "masks":  false,
+                      "max_range":  8.0,
+                      "depth_sigma_base":  0.0012,
+                      "depth_sigma_quadratic":  0.0019,
+                      "transparent_depth_drop":  0.4,
+                      "transparent_depth_noise":  3.0,
+                      "mask_erode_prob":  0.3,
+                      "min_mask_pixels":  25,
+                      "pos_sigma_base":  0.01,
+                      "pos_sigma_per_m":  0.02,
+                      "pos_sigma_rows":  240,
+                      "size_sigma_rel":  0.03,
+                      "yaw_sigma":  0.05,
+                      "odom_pos_sigma":  0.003,
+                      "odom_yaw_sigma":  0.003,
+                      "odom_scale_error":  0.01,
+                      "odom_yaw_drift_per_m":  0.005,
+                      "confusion":  {
+                                        "cup":  [
+                                                    "bowl"
+                                                ],
+                                        "bowl":  [
+                                                     "cup"
+                                                 ]
+                                    },
+                      "confusion_prob":  0.03,
+                      "transparent_detect_prob":  0.6,
+                      "misnames":  {
+
+                                   }
+                  },
+        "rawPositionErrorMRmse":  0.004320866939726666,
+        "rawPositionErrorMP95":  0.00744312123726341,
+        "rawPositionErrorMFinal":  0.0028306053055250358,
+        "rawYawErrorDegRmse":  0.17258705199325508,
+        "rawYawErrorDegP95":  0.3245304987872912,
+        "rawYawErrorDegFinal":  0.04718902370414111,
+        "outputPositionErrorMRmse":  0.06286491471024772,
+        "outputPositionErrorMP95":  0.19019625491265185,
+        "outputPositionErrorMFinal":  0.0015914772136785525,
+        "outputYawErrorDegRmse":  0.60679598629379,
+        "outputYawErrorDegP95":  1.5674216207037452,
+        "outputYawErrorDegFinal":  0.05081259484888951,
+        "captureWallSeconds":  1.674553499891772,
+        "segmentationWallSeconds":  166.03228190002847,
+        "selectionWallSeconds":  4.280848700000206,
+        "localizationWallSeconds":  0.9344473000237485,
+        "selectionAndLocalizationMeanMs":  100.2941538466145,
+        "selectionAndLocalizationP95Ms":  153.74768500842038
+    },
+    {
+        "seed":  1,
+        "source":  "sam3",
+        "targetsDeg":  [
+                           200,
+                           -200,
+                           200,
+                           -200,
+                           0
+                       ],
+        "legs":  [
+                     {
+                         "targetDeg":  200,
+                         "expectedSignedTravelDeg":  200.0,
+                         "measuredSignedTravelDeg":  199.8754473890375,
+                         "endRouteSeconds":  6.849999999999413
+                     },
+                     {
+                         "targetDeg":  -200,
+                         "expectedSignedTravelDeg":  -400.0,
+                         "measuredSignedTravelDeg":  -399.9980777018593,
+                         "endRouteSeconds":  19.499999999999794
+                     },
+                     {
+                         "targetDeg":  200,
+                         "expectedSignedTravelDeg":  400.0,
+                         "measuredSignedTravelDeg":  399.998073587765,
+                         "endRouteSeconds":  32.14999999999394
+                     },
+                     {
+                         "targetDeg":  -200,
+                         "expectedSignedTravelDeg":  -400.0,
+                         "measuredSignedTravelDeg":  -399.9980735877651,
+                         "endRouteSeconds":  44.8000000000094
+                     },
+                     {
+                         "targetDeg":  0,
+                         "expectedSignedTravelDeg":  200.0,
+                         "measuredSignedTravelDeg":  199.99807770185936,
+                         "endRouteSeconds":  51.65000000001777
+                     }
+                 ],
+        "samples":  1034,
+        "simulationSeconds":  51.65000000001777,
+        "caseWallSeconds":  178.44823579999502,
+        "trueTotalYawTravelDeg":  1599.8677499682865,
+        "trueYawWrapCrossings":  8,
+        "trueMaxDisplacementM":  0.004307754819617428,
+        "trueFinalYawOffsetDeg":  -0.12455261096244503,
+        "observations":  52,
+        "acceptedCorrections":  23,
+        "acceptedObservationShare":  0.4423076923076923,
+        "longestTimeWithoutAcceptedCorrectionS":  11.000000000013443,
+        "longestGapRouteSeconds":  [
+                                       39.00000000000231,
+                                       50.00000000001575
+                                   ],
+        "finalCorrectionAgeS":  0.6500000000007944,
+        "reasons":  {
+                        "map_seeded":  1,
+                        "matched":  23,
+                        "insufficient_points":  7,
+                        "insufficient_overlap":  3,
+                        "optimizer_limit":  6,
+                        "poor_alignment":  8,
+                        "degenerate_geometry":  2,
+                        "correction_at_limit":  2
+                    },
+        "noise":  {
+                      "mode":  "rgbd",
+                      "masks":  false,
+                      "max_range":  8.0,
+                      "depth_sigma_base":  0.0012,
+                      "depth_sigma_quadratic":  0.0019,
+                      "transparent_depth_drop":  0.4,
+                      "transparent_depth_noise":  3.0,
+                      "mask_erode_prob":  0.3,
+                      "min_mask_pixels":  25,
+                      "pos_sigma_base":  0.01,
+                      "pos_sigma_per_m":  0.02,
+                      "pos_sigma_rows":  240,
+                      "size_sigma_rel":  0.03,
+                      "yaw_sigma":  0.05,
+                      "odom_pos_sigma":  0.003,
+                      "odom_yaw_sigma":  0.003,
+                      "odom_scale_error":  0.01,
+                      "odom_yaw_drift_per_m":  0.005,
+                      "confusion":  {
+                                        "cup":  [
+                                                    "bowl"
+                                                ],
+                                        "bowl":  [
+                                                     "cup"
+                                                 ]
+                                    },
+                      "confusion_prob":  0.03,
+                      "transparent_detect_prob":  0.6,
+                      "misnames":  {
+
+                                   }
+                  },
+        "rawPositionErrorMRmse":  0.0043091397623583605,
+        "rawPositionErrorMP95":  0.007340472829059946,
+        "rawPositionErrorMFinal":  0.0033772638294428904,
+        "rawYawErrorDegRmse":  0.1717721726324179,
+        "rawYawErrorDegP95":  0.34514207313147127,
+        "rawYawErrorDegFinal":  0.10217415844110213,
+        "outputPositionErrorMRmse":  0.008893533565453271,
+        "outputPositionErrorMP95":  0.014689691542038082,
+        "outputPositionErrorMFinal":  0.006743583143391798,
+        "outputYawErrorDegRmse":  0.2565894967209936,
+        "outputYawErrorDegP95":  0.5270608947629145,
+        "outputYawErrorDegFinal":  0.03213023097452524,
+        "captureWallSeconds":  1.4713213999930304,
+        "segmentationWallSeconds":  165.88100950002263,
+        "selectionWallSeconds":  3.8635988000314683,
+        "localizationWallSeconds":  0.8266598999762209,
+        "selectionAndLocalizationMeanMs":  90.19728269245556,
+        "selectionAndLocalizationP95Ms":  138.37606999077252
+    },
+    {
+        "seed":  2,
+        "source":  "sam3",
+        "targetsDeg":  [
+                           200,
+                           -200,
+                           200,
+                           -200,
+                           0
+                       ],
+        "legs":  [
+                     {
+                         "targetDeg":  200,
+                         "expectedSignedTravelDeg":  200.0,
+                         "measuredSignedTravelDeg":  199.82662952475138,
+                         "endRouteSeconds":  6.849999999999413
+                     },
+                     {
+                         "targetDeg":  -200,
+                         "expectedSignedTravelDeg":  -400.0,
+                         "measuredSignedTravelDeg":  -399.99807770185936,
+                         "endRouteSeconds":  19.499999999999794
+                     },
+                     {
+                         "targetDeg":  200,
+                         "expectedSignedTravelDeg":  400.0,
+                         "measuredSignedTravelDeg":  399.99807358776513,
+                         "endRouteSeconds":  32.14999999999394
+                     },
+                     {
+                         "targetDeg":  -200,
+                         "expectedSignedTravelDeg":  -400.0,
+                         "measuredSignedTravelDeg":  -399.99807358776513,
+                         "endRouteSeconds":  44.8000000000094
+                     },
+                     {
+                         "targetDeg":  0,
+                         "expectedSignedTravelDeg":  200.0,
+                         "measuredSignedTravelDeg":  199.99807770185942,
+                         "endRouteSeconds":  51.65000000001777
+                     }
+                 ],
+        "samples":  1034,
+        "simulationSeconds":  51.65000000001777,
+        "caseWallSeconds":  186.49406100000488,
+        "trueTotalYawTravelDeg":  1599.8189321040004,
+        "trueYawWrapCrossings":  8,
+        "trueMaxDisplacementM":  0.002338554963463494,
+        "trueFinalYawOffsetDeg":  -0.17337047524856347,
+        "observations":  52,
+        "acceptedCorrections":  24,
+        "acceptedObservationShare":  0.46153846153846156,
+        "longestTimeWithoutAcceptedCorrectionS":  11.000000000013443,
+        "longestGapRouteSeconds":  [
+                                       39.00000000000231,
+                                       50.00000000001575
+                                   ],
+        "finalCorrectionAgeS":  0.6500000000007944,
+        "reasons":  {
+                        "map_seeded":  1,
+                        "matched":  24,
+                        "insufficient_points":  6,
+                        "insufficient_overlap":  3,
+                        "optimizer_limit":  4,
+                        "poor_alignment":  8,
+                        "degenerate_geometry":  4,
+                        "correction_at_limit":  2
+                    },
+        "noise":  {
+                      "mode":  "rgbd",
+                      "masks":  false,
+                      "max_range":  8.0,
+                      "depth_sigma_base":  0.0012,
+                      "depth_sigma_quadratic":  0.0019,
+                      "transparent_depth_drop":  0.4,
+                      "transparent_depth_noise":  3.0,
+                      "mask_erode_prob":  0.3,
+                      "min_mask_pixels":  25,
+                      "pos_sigma_base":  0.01,
+                      "pos_sigma_per_m":  0.02,
+                      "pos_sigma_rows":  240,
+                      "size_sigma_rel":  0.03,
+                      "yaw_sigma":  0.05,
+                      "odom_pos_sigma":  0.003,
+                      "odom_yaw_sigma":  0.003,
+                      "odom_scale_error":  0.01,
+                      "odom_yaw_drift_per_m":  0.005,
+                      "confusion":  {
+                                        "cup":  [
+                                                    "bowl"
+                                                ],
+                                        "bowl":  [
+                                                     "cup"
+                                                 ]
+                                    },
+                      "confusion_prob":  0.03,
+                      "transparent_detect_prob":  0.6,
+                      "misnames":  {
+
+                                   }
+                  },
+        "rawPositionErrorMRmse":  0.004252906693486693,
+        "rawPositionErrorMP95":  0.007368281848120399,
+        "rawPositionErrorMFinal":  0.0038704460824803685,
+        "rawYawErrorDegRmse":  0.1675770163084672,
+        "rawYawErrorDegP95":  0.3284880459942476,
+        "rawYawErrorDegFinal":  0.09595227067137892,
+        "outputPositionErrorMRmse":  0.050858789867855456,
+        "outputPositionErrorMP95":  0.15843926706043107,
+        "outputPositionErrorMFinal":  0.0026418590236166055,
+        "outputYawErrorDegRmse":  0.8642783957690382,
+        "outputYawErrorDegP95":  2.6397654078369888,
+        "outputYawErrorDegFinal":  0.23811848676447875,
+        "captureWallSeconds":  1.5805651999398833,
+        "segmentationWallSeconds":  173.33857759996317,
+        "selectionWallSeconds":  4.115490600088378,
+        "localizationWallSeconds":  0.8969806000677636,
+        "selectionAndLocalizationMeanMs":  96.39367692607965,
+        "selectionAndLocalizationP95Ms":  151.35383500673925
+    }
+]

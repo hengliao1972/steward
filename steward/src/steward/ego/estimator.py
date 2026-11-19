@@ -7,8 +7,8 @@ as observations accumulate. Unmatched detections start new tracks with robot-ass
 ids. A track that should have been visible but was not detected loses existence probability
 and is dropped below a threshold.
 
-Phase 0 assumption: the ``map`` frame coincides with the world frame because odometry is
-nearly ideal; the Observer still estimates the alignment explicitly.
+The ``map`` frame starts aligned with the world frame. Optional simulated odometry calibration
+errors accumulate without a localization correction; Observer compares against World State.
 """
 
 from __future__ import annotations

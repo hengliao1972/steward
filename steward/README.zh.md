@@ -14,6 +14,10 @@ Steward 是基于 DeepSeek Harness 的具身智能机器人系统。设计见仓
 
 ## 快速开始
 
+可选的[分割辅助 CPU 定位实验](docs/localization/README.zh.md)使用 RGB-D、语义掩膜和 EKF。给 `steward up` 或支持的 pytest 动作用例添加 `--localization-experiment`，可同时启用累计里程计漂移和融合定位反馈。用 `--odom-drift` 或 `--apply-localization` 可分别启用，两项默认关闭。
+
+在本目录运行 `python -m pytest tests/test_localization_loop.py -q -s` 可执行独立的定位对照测试。三个固定种子驱动底盘沿带家具厨房的通道绕行并返回，对比零漂移与 `PerceptionConfig(odom_scale_error=0.01, odom_yaw_drift_per_m=0.005)`（平移尺度偏大 1%，每米累计 0.005 rad 航向偏差）。两组均保留默认瞬时噪声。漂移在每个仿真步按真实运动累积，本体传感器与 RGB-D 帧头共用结果，随 Episode 重置；两个漂移参数默认均为零。传感器报告的 sigma 仅涵盖瞬时噪声，不包含累计标定偏差。各 pytest 临时目录保存 `report.json` 和 `trajectory.csv`，记录误差、实际行驶距离和闭合距离。脚本化执行器路线读取里程计，同一组航点的实际行驶距离可能不同；本测试不代表自主导航、视觉配准或 SLAM，真实状态不会修正 Ego 位姿。
+
 图案匹配在一个已记录的世界时刻复制机器人观测，再释放输入调度锁和世界时钟暂停，随后计算相关性。计算期间状态查询可以继续；关闭 HTTP 连接会在拼片或四分之一转之间取消计算，观测快照的获取仍会完成。结果保留快照时刻及当时的参考物姿态，物体移动后应重新观察。`/ego/inputs` 记录快照获取，包括之后被取消的请求，不是计算完成日志。
 
 诊断运行中 Ego API 的拼图匹配：先摊开拼图片，让机器人观察拼图片和盒盖，停止其他模型和工具请求，然后在仓库根目录运行 `python3 steward/scripts/diagnose_match.py --api http://127.0.0.1:7420 --output /tmp/match-diagnosis.json`。脚本只用 Python 标准库，自动发现 `puzzle_piece` 和唯一的 `lid`，测量三次状态查询基线，再分别测试 15 秒匹配超时和 2 秒后主动断开。`--px 32` 提高匹配分辨率；`--reference ID` 和 `--entities ID ...` 可覆盖自动发现。脚本不移动机器人。JSON 保存响应、并发及断开后的状态查询耗时和输入应用计数；恢复失败、断开后无法确认计算已停止或匹配返回无有效候选时退出码为 2，并停止后续匹配。未观察到问题不代表已修复，HTTP 证据也不能证明 CPU 持续计算。API 地址必须是没有路径前缀的直接 HTTP 地址；每个恢复查询最多等待 `--recovery-timeout` 秒（默认 120），脚本总耗时可能超过该值。
@@ -33,6 +37,8 @@ open http://127.0.0.1:7400/console   # 浏览器控制台：斜视主视图、�
 控制台的“当前思考”为每个分块标明模型步骤，用分隔线区分正文和后续工具调用，并突出最近一步。突出显示表示最近记录的步骤，不代表模型仍在生成。每段不超过2000字符时原样显示，超出时保留末尾2000字符、标明已截断，并提供展开／收起入口。全文通过 `GET /console/thinking?robot=<id>&entry=<id>` 按需读取；同一记录的展开状态在轮询刷新时保留，离开可见记录窗口后清除。读取失败保留预览并提供重试；场景重置后，旧会话也不能通过全文接口读取。
 
 机器人头部有两台 RGB-D 相机：`head_camera` 看前方，`wide_camera` 是短焦广角相机，看身前台面与夹爪；两台都进入感知，见 [steward.md 13.8](../steward.md#138-机器人本体的双相机)。
+
+在 `phase1-sam` 下，控制台的「SAM 分割结果」面板显示每台相机最近完成的感知关键帧，叠加彩色实例掩码、类别分数和采集时的仿真时间。结果取自合并和裁剪后的 SAM 输出，不含深度补充和剥离；实例编号仅属于本帧，不是持久轨迹编号。读取预览不会调用 SAM。分割失败时保留最近完成的图像并显示错误；切换感知模式或重置 Episode 时清空。`GET /ego/segmentation?camera=head_camera` 提供预览，由 `/console/segmentation?robot=w:robot-1&camera=head_camera` 转发；`after=<frame-id>` 省略未变化的图像像素。
 
 `cobot-magic` 左右臂 joint1～joint6 初始角度均为 0 弧度，夹爪初始张开。`cobot-magic` 夹爪使用简化的掌体、导轨、滑块与手指几何。手指沿工具轴延伸，对称张开时内侧开口最大为 100 mm；抓取点位于两侧指垫之间、指尖后方 5 mm。这些显示几何不代表厂家 CAD，也不提供接触式抓取。
 

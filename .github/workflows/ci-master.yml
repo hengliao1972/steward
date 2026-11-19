@@ -41,7 +41,9 @@ jobs:
 
   # These native runtime carriers are post-merge checks; release keeps all targets.
   python-runtime:
-    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+    if: >-
+      github.repository == 'deepseek-harness/deepseek-harness' &&
+      (github.event_name == 'push' && github.ref == 'refs/heads/master')
     name: python runtime / macOS and Linux ARM64
     uses: ./.github/workflows/build-exe-for-python-sdk.yml
     with:
@@ -52,7 +54,9 @@ jobs:
 
   # Wine runs on master pushes or an explicit suite=wine dispatch, independently of native standbys.
   windows:
-    if: (github.event_name == 'push' && github.ref == 'refs/heads/master') || (github.event_name == 'workflow_dispatch' && inputs.suite == 'wine')
+    if: >-
+      github.repository == 'deepseek-harness/deepseek-harness' &&
+      ((github.event_name == 'push' && github.ref == 'refs/heads/master') || (github.event_name == 'workflow_dispatch' && inputs.suite == 'wine'))
     runs-on: ubuntu-latest
     name: windows node 24 / wine
     timeout-minutes: 15
@@ -140,7 +144,9 @@ jobs:
   # persistent pnpm store and tool caches make them redundant (and saving here
   # would poison the hosted cache namespace with self-hosted paths).
   serial-linux-selfhosted:
-    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+    if: >-
+      github.repository == 'deepseek-harness/deepseek-harness' &&
+      (github.event_name == 'push' && github.ref == 'refs/heads/master')
     name: serial / linux (self-hosted standby)
     runs-on: [self-hosted, linux, x64, vm-backup]
     steps:
@@ -234,7 +240,9 @@ jobs:
   # (and saving here would poison the hosted cache namespace with self-hosted
   # paths).
   serial-windows:
-    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+    if: >-
+      github.repository == 'deepseek-harness/deepseek-harness' &&
+      (github.event_name == 'push' && github.ref == 'refs/heads/master')
     name: serial / windows (self-hosted standby)
     runs-on: [self-hosted, dsh-win-ci, windows]
     timeout-minutes: 120

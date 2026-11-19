@@ -27,6 +27,8 @@ env:
 
 jobs:
   dependencies:
+    # Run inherited Harness release checks only in the original repository.
+    if: github.repository == 'deepseek-harness/deepseek-harness'
     name: Dependency layout
     # Persistent runners accept only trusted, credential-free rehearsals.
     runs-on: >-
@@ -97,6 +99,8 @@ jobs:
           exit "$layout_status"
 
   pack:
+    # Run inherited Harness release checks only in the original repository.
+    if: github.repository == 'deepseek-harness/deepseek-harness'
     name: Pack npm tarballs
     # Persistent runners accept only trusted, credential-free rehearsals.
     runs-on: >-

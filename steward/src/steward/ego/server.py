@@ -25,6 +25,9 @@ from steward.viewloop import ViewSettings, frame_response
 UNRECORDED = frozenset({
     ("GET", "/ego/state"), ("GET", "/ego/control"), ("GET", "/ego/alerts"), ("GET", "/ego/dropped"), ("GET", "/ego/view"),
     ("POST", "/ego/view"),
+    ("GET", "/ego/segmentation"),
+    ("GET", "/ego/localization"),
+    ("GET", "/ego/localization/preview"),
     ("GET", "/ego/view/frame"), ("GET", "/ego/plan"), ("GET", "/ego/receipt"), ("GET", "/skill/status"),
     ("POST", "/skill/wait"), ("POST", "/clock/sleep"), ("GET", "/ego/inputs"),
 })
@@ -114,6 +117,13 @@ def _routes(runtime: EgoRuntime) -> dict:
         raise ValueError("action must be acquire or release")
 
     return {
+        ("GET", "/ego/localization"): lambda q, b: runtime.localization_status(),
+        ("GET", "/ego/localization/preview"): lambda q, b: runtime.localization_preview(q.get("episode"), q.get("version")),
+        ("GET", "/ego/segmentation"): lambda q, b: {
+            "active": runtime.perception_mode == "rgbd-segmenter",
+            "error": runtime.segmentation["lastError"],
+            "frame": (runtime.segmentation_preview.latest(q.get("camera", "head_camera"), q.get("after"))
+                      if runtime.perception_mode == "rgbd-segmenter" else None)},
         ("GET", "/ego/summary"): lambda q, b: runtime.summary(),
         ("GET", "/ego/state"): lambda q, b: runtime.ego_state().to_dict(),
         ("GET", "/ego/query"): lambda q, b: {"objects": runtime.query(

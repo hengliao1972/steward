@@ -12,7 +12,9 @@ jobs:
   master:
     name: Master Change
     # Each check runs only while its repository variable is neither empty nor `off`; otherwise the job is skipped.
-    if: ${{ vars.MERGE_POLICY_MASTER_DIFF != '' && vars.MERGE_POLICY_MASTER_DIFF != 'off' && !github.event.pull_request.draft }}
+    if: >-
+      github.repository == 'deepseek-harness/deepseek-harness' &&
+      (vars.MERGE_POLICY_MASTER_DIFF != '' && vars.MERGE_POLICY_MASTER_DIFF != 'off' && !github.event.pull_request.draft)
     runs-on: ubuntu-latest
     timeout-minutes: 15
     outputs:
@@ -45,7 +47,9 @@ jobs:
   pre-merge:
     name: Pre-Merge Check
     needs: master
-    if: ${{ vars.MERGE_POLICY_PRE_MERGE != '' && vars.MERGE_POLICY_PRE_MERGE != 'off' && needs.master.result == 'success' }}
+    if: >-
+      github.repository == 'deepseek-harness/deepseek-harness' &&
+      (vars.MERGE_POLICY_PRE_MERGE != '' && vars.MERGE_POLICY_PRE_MERGE != 'off' && needs.master.result == 'success')
     runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 60
     # This job installs and compiles the pull request: it reads contents only and receives no secret.

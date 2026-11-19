@@ -1,0 +1,31 @@
+# Bilingual-pair consistency record for README.md (docs/i18n/README.md): per heading
+# section, a hash of its English and Chinese blocks outside code blocks and generated regions.
+# After editing either side, bring the other along and re-record with:
+#   pnpm run verify-translation-pairing --write steward/docs/localization/README.md
+/segmentation-assisted-continuous-localization:
+  en: 268be925e3e8dbf7
+  zh: 4e77075099308293
+/segmentation-assisted-continuous-localization/scope:
+  en: 2e7dd04301b302cc
+  zh: a97c5c07c403cd2e
+/segmentation-assisted-continuous-localization/run:
+  en: 3e6d4b6d2f2f7cce
+  zh: 94a7d542280c0c3f
+/segmentation-assisted-continuous-localization/selection-and-matching:
+  en: 05ea1786f8373077
+  zh: 26940dd8dbf89c69
+/segmentation-assisted-continuous-localization/ekf-fusion:
+  en: 475961dce7ba9835
+  zh: 35c22eeff2de61c2
+/segmentation-assisted-continuous-localization/configuration-and-limits:
+  en: a6186feed00b0269
+  zh: b7168be2f0bf7d1a
+/segmentation-assisted-continuous-localization/feedback-coordinates:
+  en: 5a4a30a336f20a5c
+  zh: bae7263ac072cd20
+/segmentation-assisted-continuous-localization/motion-task-matrix:
+  en: 0d2dd3b5d5ad01aa
+  zh: 0b4edf2a733179d5
+/segmentation-assisted-continuous-localization/validation-and-first-measurement:
+  en: aba02a754085adba
+  zh: 3cf08e98d93090c5

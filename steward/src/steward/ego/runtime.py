@@ -9,9 +9,11 @@ from __future__ import annotations
 
 import base64
 import collections
+import copy
 import io
 import contextlib
 import itertools
+import json
 import math
 import os
 import sys
@@ -36,10 +38,12 @@ from steward.ego.kinematics import gripper_pose
 from steward.ego.arm import Arm
 from steward.ego.esim import Esim, EsimConfig, PredictionError
 from steward.ego.estimator import SELF_ID, EgoEstimator, _CONTENT
+from steward.ego.localization_feedback import LocalizationFeedback
 from steward.ego import reflection
 from steward.ego.reflection import ReflectionConfig
 from steward.ego.roles import RoleConfig, assign_roles
 from steward.ego.segmenter import DepthClusters, Segmenter, SegmenterError
+from steward.ego.segmentation_preview import SegmentationPreview
 from steward.ego.skills import MotionConfig, SkillExecutor, SkillFailed
 from steward.math3d import matrix_from_quat, pose_compose, pose_inverse, quat_rotate, wrap_angle, yaw_from_quat
 from steward.net import HttpError, call
@@ -134,6 +138,12 @@ class RuntimeConfig:
     motion: MotionConfig = field(default_factory=MotionConfig)
     roles: RoleConfig = field(default_factory=RoleConfig)
     reflection: ReflectionConfig = field(default_factory=ReflectionConfig)
+    localization_config: str | None = None
+    """Opt-in segmented-depth localization TOML; diagnostic unless localization_apply is enabled."""
+    localization_apply: bool = False
+    """Use localization's map frame for perception, live body reads and skill planning."""
+    localization_interval_s: float = 1.0
+    """Simulation seconds between localization observations when feedback is enabled."""
 
 
 def body_ok(category: str) -> bool:
@@ -316,7 +326,27 @@ class EgoRuntime:
         mobile kitchen robot, whose lift, reach slide and wrist are the planar arm itself."""
         self.link = link
         self.config = config or RuntimeConfig()
+        if self.config.localization_apply and self.config.localization_config is None:
+            raise ValueError("localization_apply requires localization_config")
+        if not math.isfinite(self.config.localization_interval_s) or self.config.localization_interval_s <= 0:
+            raise ValueError("localization_interval_s must be finite and positive")
+        self._feedback = LocalizationFeedback()
+        self._next_localization = 0.0
+        self._localization_epoch = None
+        self._localization_error = None
+        self._fusion_stats = {"mappedHeaders": 0, "visualFrames": 0, "acceptedVisual": 0,
+                              "independentSamRequests": 0, "visualErrors": 0}
+        self._localization_segmenter = None
         self.estimator = EgoEstimator(robot_model=robot_model)
+        self.localizer = None
+        self._localization_status = {"enabled": False}
+        if self.config.localization_config is not None:
+            from steward.ego.distance_localization import LocalizationConfig, SegmentedLocalizer
+            self.localizer = SegmentedLocalizer(robot_model, LocalizationConfig.load(Path(self.config.localization_config)))
+            self._localization_status = {"enabled": True, "state": "waiting"}
+            if self.config.localization_apply:
+                self._localization_segmenter = segmenter or Segmenter.from_files(
+                    cache_dir=None if out_dir is None else out_dir/"localization-sam-cache")
         unknown = [c for c in self.config.cameras or () if c not in self.estimator.cameras]
         if unknown:
             raise ValueError(f"RuntimeConfig.cameras {unknown} are not cameras of the robot model "
@@ -325,6 +355,7 @@ class EgoRuntime:
         self._arm_joints = {j["id"]: j["type"]["value"] for j in robot_model["body"]["joints"]
                             if j["type"]["value"] in ("prismatic", "revolute")}
         self.segmenter = segmenter
+        self.segmentation_preview = SegmentationPreview()
         if segmenter is not None:
             self.estimator.config.semantic_shape_weight = segmenter.config.shape_weight
             self.estimator.config.semantic_label_floor = segmenter.config.label_floor
@@ -425,6 +456,7 @@ class EgoRuntime:
                     # the new pipeline; what the gripper holds and the running skill are kept.
                     self.estimator.forget_objects()
                 self.perception_mode = mode
+                self.segmentation_preview.clear()
                 self._keyframe = {}
                 self._pose_sample = None
                 self._still_since = None
@@ -439,9 +471,14 @@ class EgoRuntime:
             if unmasked and not self._segment(unmasked):
                 pairs = [pair for pair in pairs if pair[0]["mask"] is not None]
             frames = [rgbd for rgbd, _whole in pairs]
+            localization_frames = self._localization_frames(frame, frames)
             with self._lock:
                 if self._new_episode(frame):
                     self._restart()
+                self._advance_localization(frame, localization_frames)
+                frame = self._feedback_header(frame)
+                pairs = [(self._feedback_frame(rgbd), self._feedback_frame(full)) for rgbd, full in pairs]
+                frames = [rgbd for rgbd, _whole in pairs]
                 self._keep_motion_belief()  # what a motion loop reads while this update runs
                 if not frames:
                     self.estimator.update_body(frame)
@@ -453,13 +490,105 @@ class EgoRuntime:
             return
         frame = {**frame, "cameras": [c for c in frame.get("cameras", []) if c["id"] in cameras],
                  "detections": [d for d in frame.get("detections", []) if d.get("camera") in cameras]}
+        localization_frames = self._localization_frames(frame, [])
         with self._lock:
             if self._new_episode(frame):
                 self._restart()
+            self._advance_localization(frame, localization_frames)
+            frame = self._feedback_header(frame)
             self._keep_motion_belief()  # what a motion loop reads while this update runs
             self.estimator.update(frame)
             self._publish_view_scene()
             self._keep_motion_belief()
+
+    def localization_status(self) -> dict:
+        """Snapshot of optional continuous localization, including prediction/rejection status.
+
+        Feedback is used by Ego-State and skills only with ``localization_apply`` enabled.
+        """
+        with self._lock:
+            return copy.deepcopy(self._localization_status)
+
+    def localization_preview(self, episode: str | None, version: str | None) -> dict:
+        """Return the latest estimate and zero-distance cells if the viewer's map is older."""
+        with self._lock:
+            status = self._localization_status
+            if self.localizer is None or "stamp" not in status:
+                return {"enabled": status["enabled"]}
+            result = {k: status[k] for k in ("enabled", "stamp", "episode", "pose", "state", "mapVersion", "mapClearedCells")}
+            tracker = self.localizer.tracker
+            if tracker.origin is None or (str(status["episode"]) == episode and str(status["mapVersion"]) == version):
+                return result
+            grid = status["mapGrid"]
+            occupied = tracker.occupied
+            heights = tracker.config.height_edges_m
+        # Insertions publish a fresh occupancy array. Readers can encode a snapshot outside the lock.
+        return result | {"grid": grid, "heightEdgesM": heights,
+                         "zeroCells": [np.argwhere(layer).ravel().tolist() for layer in occupied]}
+
+    def _feedback_header(self, header: dict | None) -> dict | None:
+        if header is None or not self.config.localization_apply:
+            return header
+        projected = self._feedback.project(header)
+        if projected is not header:
+            self._fusion_stats["mappedHeaders"] += 1
+        return projected
+
+    def _feedback_frame(self, frame: dict) -> dict:
+        if not self.config.localization_apply:
+            return frame
+        return {**frame, "header": self._feedback_header(frame["header"])}
+
+    def _localization_frames(self, header: dict, frames: list[dict]) -> list[dict]:
+        if not self.config.localization_apply:
+            return frames
+        if header.get("episode") != self._localization_epoch:
+            self._localization_epoch, self._next_localization = header.get("episode"), 0.0
+        if header["stamp"] + 1e-9 < self._next_localization:
+            return []
+        camera = self.localizer.selector.config.camera
+        selected = next((f for f in frames if f["camera"] == camera), None)
+        if selected is None:
+            available = {c["id"] for c in header.get("cameras", [])}
+            if camera not in available:
+                self._localization_error = f"localization camera unavailable: {camera}"
+                return []
+            selected = decode_rgbd(self.link.rgbd(camera))
+        self._next_localization = selected["header"]["stamp"] + self.config.localization_interval_s
+        if "labels" not in selected:
+            self._fusion_stats["independentSamRequests"] += 1
+            try:
+                prediction = self._localization_segmenter.segment(selected["rgb"])
+            except SegmenterError as error:
+                self._fusion_stats["visualErrors"] += 1
+                if self._localization_error is None:
+                    self.alert(f"融合定位分割失败，继续里程计预测：{error}", "localization")
+                self._localization_error = str(error)
+                return []
+            selected = {**selected, "mask": prediction.mask, "labels": prediction.labels}
+        self._localization_error = None
+        return [selected]
+
+    def _advance_localization(self, header: dict, frames: list[dict]) -> None:
+        if self.localizer is None:
+            return
+        camera = self.localizer.selector.config.camera
+        selected = next((f for f in frames if f["camera"] == camera), None)
+        sample = header if selected is None else selected["header"]
+        tracker = self.localizer.tracker
+        if tracker.episode == sample["episode"] and tracker.stamp is not None and sample["stamp"] <= tracker.stamp:
+            return
+        result = self.localizer.predict(sample) if selected is None else self.localizer.observe(selected)
+        self._localization_status = {"enabled": True, **result}
+        if self.config.localization_apply:
+            self._feedback.publish(result)
+            self._fusion_stats["visualFrames"] += int(selected is not None)
+            self._fusion_stats["acceptedVisual"] += int(result["accepted"])
+            self._localization_status.update(applied=True, visualError=self._localization_error)
+        if self.out_dir is not None:
+            self.out_dir.mkdir(parents=True, exist_ok=True)
+            with (self.out_dir / "localization.jsonl").open("a", encoding="utf-8") as stream:
+                stream.write(json.dumps(self._localization_status, allow_nan=False) + "\n")
 
     def _cameras(self, frame: dict) -> list[str]:
         """The cameras to perceive with: those of the robot model (or ``RuntimeConfig.cameras``) that
@@ -662,6 +791,8 @@ class EgoRuntime:
                 for rgbd, _whole in pairs:
                     rgbd["mask"] = None
             else:
+                for (rgbd, _whole), result in zip(pairs, zoomed):
+                    self.segmentation_preview.publish(rgbd["camera"], rgbd["header"]["stamp"], rgbd["rgb"], result)
                 stats["frames"] += len(results)
                 stats["cached"] += sum(result.cached for result in results)
                 asked = [result.seconds for result in results if not result.cached]
@@ -723,7 +854,7 @@ class EgoRuntime:
 
     def _camera_frames(self) -> list[dict]:
         """One fresh decoded RGB-D frame from each camera perception uses, primary first."""
-        return [decode_rgbd(self.link.rgbd(c)) for c in self._cameras(self.link.sensors())]
+        return [self._feedback_frame(decode_rgbd(self.link.rgbd(c))) for c in self._cameras(self.link.sensors())]
 
     def _telemetry_scene(self) -> dict:
         """The Ego-State sent as telemetry, each object carrying its scene-level role as the state
@@ -772,9 +903,17 @@ class EgoRuntime:
         self._roles.clear()
         self._looked_at.clear()
         self._keyframe = {}
+        self.segmentation_preview.clear()
         self._pose_sample = None
         self._still_since = None
         self._motion_belief = None
+        if self.localizer is not None:
+            self.localizer.tracker.reset()
+            self._localization_status = {"enabled": True, "state": "waiting"}
+        self._feedback.reset()
+        self._next_localization = 0.0
+        self._localization_epoch = None
+        self._localization_error = None
 
     def _loop(self) -> None:
         """Perceive every ``1 / perception_hz`` seconds of world time, from the time the runtime started;
@@ -855,7 +994,7 @@ class EgoRuntime:
                                      or (live.get("episode") is not None and self._episode is not None
                                          and live["episode"] != self._episode)):
                 live = None  # older than the belief, or another episode's body: the belief's own
-            return est.to_scene(live)
+            return est.to_scene(self._feedback_header(live))
 
     def _motion_state(self) -> dict:
         """What the body is doing now, for the motion loop.
@@ -895,6 +1034,7 @@ class EgoRuntime:
                 or (live.get("episode") is not None and belief.get("episode") is not None
                     and live["episode"] != belief["episode"]) or belief.get("generation") != self._generation:
             return self.arm.virtualize(state)
+        live = self._feedback_header(live)
         for key in ("stamp", "odometry", "joints", "gripper", "grippers"):
             if live.get(key) is not None:
                 state[key] = live[key]
@@ -923,6 +1063,7 @@ class EgoRuntime:
         with self._lock:
             if not self._same_episode(generation, body):  # the skill or the body is another episode's
                 return track_id
+            body = self._feedback_header(body)
             held = self.estimator.mark_held(track_id, at, gripper=self.arm.geometry.gripper, body=body)
             track = getattr(self.estimator, 'tracks', {}).get(held)
             if track is not None and track.held_tool_feature is not None:
@@ -943,7 +1084,7 @@ class EgoRuntime:
         with self._lock:
             if not self._same_episode(generation, body):  # the skill or the body is another episode's
                 return
-            self.estimator.release_at(track_id, spot, body=body, target=target, tip_roll=tip_roll)
+            self.estimator.release_at(track_id, spot, body=self._feedback_header(body), target=target, tip_roll=tip_roll)
 
     def _skill_generation(self) -> int:
         """The generation the running skill was predicted in: a callback reached after a reset (the
@@ -1673,6 +1814,7 @@ class EgoRuntime:
                 rgbd = decimated(whole, self._perception_rows(whole), self.config.depth_join)
                 if rgbd["mask"] is None and not self._segment([(rgbd, whole)]):
                     raise RuntimeError(f"the {camera} image could not be segmented: {self.segmentation['lastError']}")
+                rgbd = self._feedback_frame(rgbd)
                 with self._lock:
                     cam = self.estimator.camera_pose(rgbd["header"]["odometry"], camera)
                 for seg in segments(rgbd, cam):

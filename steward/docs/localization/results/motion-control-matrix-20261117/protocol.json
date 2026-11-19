@@ -1,0 +1,27 @@
+{
+  "order": [
+    "baseline",
+    "drift",
+    "drift-fused",
+    "clean-fused"
+  ],
+  "caseTimeoutSeconds": 600,
+  "noise": {
+    "baseline": {
+      "odom_scale_error": 0,
+      "odom_yaw_drift_per_m": 0
+    },
+    "drift": {
+      "odom_scale_error": 0.01,
+      "odom_yaw_drift_per_m": 0.005
+    }
+  },
+  "instantaneousNoise": "unchanged",
+  "assertionsAndInternalDeadlines": "unchanged",
+  "isolation": "one subprocess per parametrized nodeid",
+  "pump": "same main-thread rendering pump in every stage",
+  "fusion": "EKF map-from-odometry applied to new perception and live control body reads; real SAM when same-frame semantic labels unavailable",
+  "interpretation": "Single run per cell, not a reliability estimate. Original ideal/rgbd perception phases are preserved. GT is used by original test setup/assertions and puzzle target association, never by the localizer.",
+  "baselineTree": "b944ef666755b6679aba87a2ec5fbb213733c846",
+  "preservedBaselineCheckout": ".worktrees/motion-matrix-baseline-20261117"
+}

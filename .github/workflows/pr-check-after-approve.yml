@@ -15,7 +15,9 @@ jobs:
   approve:
     name: Approve Check
     # Each check runs only while its repository variable is neither empty nor `off`; otherwise the job is skipped.
-    if: ${{ vars.MERGE_POLICY_HEAD_DIFF != '' && vars.MERGE_POLICY_HEAD_DIFF != 'off' }}
+    if: >-
+      github.repository == 'deepseek-harness/deepseek-harness' &&
+      (vars.MERGE_POLICY_HEAD_DIFF != '' && vars.MERGE_POLICY_HEAD_DIFF != 'off')
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -48,7 +50,9 @@ jobs:
 
   review:
     name: Reviewer Evaluate
-    if: ${{ vars.MERGE_POLICY_REVIEW != '' && vars.MERGE_POLICY_REVIEW != 'off' }}
+    if: >-
+      github.repository == 'deepseek-harness/deepseek-harness' &&
+      (vars.MERGE_POLICY_REVIEW != '' && vars.MERGE_POLICY_REVIEW != 'off')
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:

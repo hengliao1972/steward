@@ -10,7 +10,9 @@ jobs:
   recheck:
     name: Recheck
     # Re-runs the head-branch checks, so it follows their variables.
-    if: ${{ vars.MERGE_POLICY_MASTER_DIFF != '' && vars.MERGE_POLICY_MASTER_DIFF != 'off' || vars.MERGE_POLICY_PRE_MERGE != '' && vars.MERGE_POLICY_PRE_MERGE != 'off' }}
+    if: >-
+      github.repository == 'deepseek-harness/deepseek-harness' &&
+      (vars.MERGE_POLICY_MASTER_DIFF != '' && vars.MERGE_POLICY_MASTER_DIFF != 'off' || vars.MERGE_POLICY_PRE_MERGE != '' && vars.MERGE_POLICY_PRE_MERGE != 'off')
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:

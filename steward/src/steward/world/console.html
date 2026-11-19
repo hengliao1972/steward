@@ -44,8 +44,14 @@
   @media (max-width: 1100px) { .grid3 { grid-template-columns: 1fr 1fr; } }
   @media (max-width: 820px) { .panes, .grid3 { grid-template-columns: 1fr; } }
   canvas.plain { width: 100%; display: block; border-radius: 6px; background: #11151a; }
+  #localizationMap { aspect-ratio: 4 / 3; }
+  .localization-key span::before { content: ''; display: inline-block; width: .75em; height: .75em;
+    border-radius: 2px; background: var(--key); margin-right: .35em; }
+  #localizationLayerKey span::before { opacity: .55; }
+  #localizationStatus { height: auto; min-height: 1.35em; white-space: normal; }
   .cam img { width: 100%; border-radius: 6px; background: #11151a; aspect-ratio: 4 / 3; object-fit: cover; display: block; }
   .cam img:not([src]) { visibility: hidden; }
+  .cam img[hidden] { display: none; }
   .cam + .cam { margin-top: 10px; }
   .cam .caption { font-size: 12px; color: var(--muted); margin: 0 0 4px; }
   table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
@@ -193,13 +199,25 @@
       </div>
       <div>
         <div class="pane-title"><span class="dot" style="background:var(--ego)"></span>Ego State
-          <span class="sub" id="egoSub">机器人自我态（同一转换器渲染）</span></div>
+          <span class="sub" id="egoSub">机器人自我态（同一转换器渲染）</span>
+          <button id="showLocalization" type="button" aria-pressed="false">定位建图</button></div>
         <div class="pane-stats" id="fpsEgo" aria-live="polite"></div>
         <div class="viewport" id="vpEgo" tabindex="0" role="region" aria-label="自我态预览，WASD 移动视角" aria-describedby="egoViewHint">
           <img id="imgEgo" alt="Ego State">
           <canvas id="ovEgo" width="1024" height="768"></canvas>
           <div class="empty" id="egoEmpty">尚未收到机器人的自我态</div>
           <div class="hint" id="egoViewHint">点击后 WASD 移动 · Shift 加速 · 拖动原地转头 · 滚轮缩放</div>
+        </div>
+        <div id="localizationPanel" hidden>
+          <canvas class="plain" id="localizationMap" width="800" height="600" role="img"
+                  aria-label="俯视定位图，对比实际轨迹、定位轨迹、零距离格点和仿真墙面"></canvas>
+          <div class="legend localization-key">
+            <span style="--key:var(--gt)">实际轨迹</span><span style="--key:var(--ego)">定位轨迹（预测 / 校正）</span>
+            <span style="--key:#a0aebb">仿真墙面</span>
+            <label for="localizationLayer">零距离格点</label><select id="localizationLayer"><option value="all">全部高度层</option></select>
+          </div>
+          <div class="legend localization-key" id="localizationLayerKey" aria-label="零距离格点的高度层颜色"></div>
+          <p class="pane-stats" id="localizationStatus" aria-live="polite">等待定位数据</p>
         </div>
         <div class="robot-status" id="robotStatus">
           <div class="rs-now" id="rsNow">机器人尚未发布计划</div>
@@ -242,6 +260,14 @@
         <div class="cam" data-sensor="R_wrist_camera" hidden><p class="caption" id="camCaption-R_wrist_camera">右腕相机 · Piper 末端 eye-in-hand（垂直视野 ≈45°）</p>
           <img id="camRobot-R_wrist_camera" alt="右腕相机"></div>
       </div>
+      <h2>SAM 分割结果</h2>
+      <p class="caption">按感知关键帧更新；彩色区域为 SAM 实例，不含深度几何补充。编号只在本帧内有效。</p>
+      <div class="cam"><p class="caption" id="samCaption-head_camera">头部相机 · 等待分割结果</p>
+        <img id="samImage-head_camera" alt="头部相机 SAM 分割结果" hidden>
+        <div class="caption" id="samLabels-head_camera"></div></div>
+      <div class="cam"><p class="caption" id="samCaption-wide_camera">广角相机 · 等待分割结果</p>
+        <img id="samImage-wide_camera" alt="广角相机 SAM 分割结果" hidden>
+        <div class="caption" id="samLabels-wide_camera"></div></div>
     </section>
     <section class="card">
       <h2>俯视地图（蓝：真实状态　橙：自我态）</h2>
@@ -736,6 +762,102 @@ async function refresh() {
 }
 
 // ------------------------------------------------------------------ top map
+let localization = { estimate: [], truth: [] };
+const localizationLayerColors = ['#54e3b6', '#b58cff', '#f5d76a', '#ff90be', '#87d7ff'];
+const localizationLayerColor = index => localizationLayerColors[index] || `hsl(${index * 137.508 % 360} 85% 70%)`;
+function drawLocalization() {
+  const cv = $('localizationMap'), ctx = cv.getContext('2d');
+  const floor = state?.groundTruth?.find(g => g.category === 'floor');
+  const center = floor ? floor.center : [0, 0];
+  const size = floor ? floor.size : [8, 6];
+  const scale = Math.min(cv.width / (size[0] + .65), cv.height / (size[1] + .65));
+  const xy = (x, y) => [cv.width / 2 + (x - center[0]) * scale, cv.height / 2 - (y - center[1]) * scale];
+  ctx.clearRect(0, 0, cv.width, cv.height);
+  ctx.fillStyle = COLORS.floor;
+  ctx.fillRect(...xy(center[0] - size[0] / 2, center[1] + size[1] / 2), size[0] * scale, size[1] * scale);
+  for (const wall of state?.groundTruth || []) {
+    if (wall.category !== 'wall') continue;
+    ctx.save(); ctx.translate(...xy(...wall.center)); ctx.rotate(-wall.yaw);
+    ctx.fillStyle = '#a0aebb';
+    const [w, h] = wall.size.map(value => value * scale);
+    ctx.fillRect(-w / 2, -h / 2, w, h); ctx.restore();
+  }
+  if (localization.grid) {
+    const { origin, spacingM } = localization.grid;
+    const selected = $('localizationLayer').value;
+    const dotSize = Math.max(2, spacingM[0] * scale * .65);
+    ctx.save(); ctx.globalAlpha = .55;
+    localization.zeroCells.forEach((layer, index) => {
+      if (selected !== 'all' && Number(selected) !== index) return;
+      ctx.fillStyle = localizationLayerColor(index);
+      for (let i = 0; i < layer.length; i += 2) {
+        const [x, y] = xy(origin[0] + layer[i] * spacingM[0], origin[1] + layer[i + 1] * spacingM[1]);
+        ctx.fillRect(x - dotSize / 2, y - dotSize / 2, dotSize, dotSize);
+      }
+    });
+    ctx.restore();
+  }
+  for (const [track, color, dashed] of [[localization.truth, '#4aa3ff', false], [localization.estimate, '#ff9f43', true]]) {
+    if (!track.length) continue;
+    ctx.strokeStyle = ctx.fillStyle = color; ctx.lineWidth = 3.5;
+    ctx.setLineDash(dashed ? [7, 5] : []);
+    ctx.beginPath(); ctx.moveTo(...xy(...track[0].position));
+    for (const point of track.slice(1)) ctx.lineTo(...xy(...point.position));
+    ctx.stroke(); ctx.setLineDash([]);
+    ctx.beginPath(); ctx.arc(...xy(...track.at(-1).position), 4.5, 0, Math.PI * 2); ctx.fill();
+  }
+}
+
+async function refreshLocalization() {
+  if ($('localizationPanel').hidden || !robotId || !state?.loaded) return;
+  const robot = robotId;
+  if (localization.robot !== robot) localization = { robot, estimate: [], truth: [] };
+  const query = new URLSearchParams({ robot });
+  if (localization.grid) { query.set('episode', localization.episode); query.set('version', localization.version); }
+  try {
+    const frame = await api('GET', `/console/localization?${query}`);
+    if (robot !== robotId) return;
+    if (!frame.truth || localization.episode !== frame.episode) {
+      localization = { robot, episode: frame.episode, estimate: [], truth: [] };
+      $('localizationLayerKey').replaceChildren();
+      $('localizationLayer').replaceChildren(new Option('全部高度层', 'all'));
+    }
+    if (frame.grid) {
+      Object.assign(localization, { grid: frame.grid, zeroCells: frame.zeroCells, version: frame.mapVersion });
+      const control = $('localizationLayer'), selected = control.value;
+      const labels = frame.zeroCells.map((_, i) => `${frame.heightEdgesM[i]}–${frame.heightEdgesM[i + 1]} m`);
+      control.replaceChildren(new Option('全部高度层', 'all'), ...labels.map((label, i) => new Option(label, String(i))));
+      control.value = Number(selected) < frame.zeroCells.length ? selected : 'all';
+      $('localizationLayerKey').replaceChildren(...labels.map((label, i) => {
+        const swatch = document.createElement('span'); swatch.textContent = label;
+        swatch.style.setProperty('--key', localizationLayerColor(i));
+        return swatch;
+      }));
+    }
+    if (frame.truth) {
+      for (const [track, sample] of [[localization.truth, frame.truth],
+        [localization.estimate, { stamp: frame.stamp, position: frame.pose }]]) {
+        if (!track.length || sample.stamp > track.at(-1).stamp) {
+          track.push(sample);
+          if (track.length > 3000) track.shift();
+        }
+      }
+    }
+    const statuses = { initializing: '初始建图', predicted: '里程计预测', corrected: '接受视觉校正' };
+    setText($('localizationStatus'), !frame.enabled ? '此机器人未启用定位' : frame.truth ?
+      `${statuses[frame.state] || '等待定位数据'} · 地图版本 ${frame.mapVersion} · 已清除 ${frame.mapClearedCells ?? 0} 格 · t = ${frame.stamp.toFixed(2)} s` : '等待定位数据');
+  } catch (error) { setText($('localizationStatus'), `定位数据暂不可用：${error.message}`); }
+  drawLocalization();
+}
+
+function showLocalization(show) {
+  $('vpEgo').hidden = show;
+  $('localizationPanel').hidden = !show;
+  $('showLocalization').setAttribute('aria-pressed', String(show));
+  $('showLocalization').textContent = show ? '自我态视图' : '定位建图';
+  if (show) drawLocalization();
+}
+
 function drawMap() {
   const cv = $('map'), ctx = cv.getContext('2d');
   const floor = state.groundTruth.find(g => g.category === 'floor');
@@ -1135,6 +1257,46 @@ async function refreshRobotCamera() {
   setText($('robotCamLabel'), `机器人相机 · ${robotId} · ${cameraMeter().toFixed(1)} fps`);
 }
 
+const samShown = {};
+async function refreshSegmentation() {
+  const robot = robotId;
+  if (!robot) return;
+  await Promise.all(ROBOT_CAMERAS.map(async sensor => {
+    const image = $('samImage-' + sensor), caption = $('samCaption-' + sensor), labels = $('samLabels-' + sensor);
+    const name = sensor === 'head_camera' ? '头部相机' : '广角相机';
+    const previous = samShown[sensor];
+    if (previous?.robot !== robot) { image.hidden = true; image.removeAttribute('src'); labels.replaceChildren(); }
+    try {
+      const params = new URLSearchParams({ robot, camera: sensor });
+      if (previous?.robot === robot) params.set('after', previous.id);
+      const res = await fetch('/console/segmentation?' + params, { cache: 'no-store' });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      if (robotId !== robot) return;
+      const frame = data.frame;
+      if (!frame) {
+        image.hidden = true; image.removeAttribute('src'); labels.replaceChildren(); delete samShown[sensor];
+        setText(caption, `${name} · ${!data.active ? '当前未启用 SAM，请切换到 phase1-sam' : data.error ? '分割失败：' + data.error : '等待此相机的分割结果'}`);
+        return;
+      }
+      if (frame.image) {
+        image.src = frame.image; image.hidden = false;
+        samShown[sensor] = { robot, id: frame.id };
+        labels.replaceChildren(...frame.labels.map(label => {
+          const span = document.createElement('span');
+          span.style.color = label.color;
+          span.textContent = `■ ${label.id}: ${label.category}${label.score == null ? '' : ' ' + Math.round(label.score * 100) + '%'}　`;
+          return span;
+        }));
+        if (!frame.labels.length) setText(labels, '本帧未检出实例');
+      }
+      setText(caption, `${name} · 最近完成帧 t=${Number(frame.stamp).toFixed(2)} s${data.error ? ' · 后续分割失败：' + data.error : ''}`);
+    } catch (e) {
+      if (robotId === robot) setText(caption, `${name} · 分割预览不可用：${e.message}（保留图像为上次结果）`);
+    }
+  }));
+}
+
 // ------------------------------------------------------------------ scenarios & bodies
 // ---------------------------------------------------------------- body & scenario
 // The body (embodiment) and the scenario are chosen apart: any registered body takes any scenario
@@ -1245,6 +1407,9 @@ $('speed').onchange = async () => { try { await api('POST', '/wca/clock', { acti
 for (const id of ['showGtLabels', 'showEgoLabels', 'showSigma', 'showError']) $(id).onchange = drawOverlays;
 
 $('fps').value = String(fps);
+$('showLocalization').onclick = () => showLocalization($('localizationPanel').hidden);
+$('localizationLayer').onchange = drawLocalization;
+showLocalization(new URLSearchParams(location.search).get('view') === 'localization');
 $('fps').onchange = () => {
   fps = Number($('fps').value); localStorage.setItem(FPS_KEY, String(fps));
   panes.world.index = panes.ego.index = null;  // tick numbers restart at a new rate
@@ -1252,10 +1417,12 @@ $('fps').onchange = () => {
 };
 refresh().then(loadScenarios);
 paced(refresh, () => Math.min(fps, 5));
+paced(refreshLocalization, () => 5);
 ticked(() => pullFrame('world'));
 ticked(() => pullFrame('ego'));
 setInterval(postView, 5000);
 paced(refreshRobotCamera, () => fps);
+paced(refreshSegmentation, () => 1);
 refreshChat();
 setInterval(refreshChat, 800);
 </script>

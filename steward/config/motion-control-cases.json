@@ -1,0 +1,21 @@
+{
+  "scope": "Existing physical motion tasks using the shared Steward-bot Ego Runtime; assertions and internal deadlines are unchanged.",
+  "excluded": {
+    "mock_or_offline": "Fake actuators, planner-only and geometry-only tests do not exercise injected physical odometry or the fused control chain.",
+    "direct_physics": "Direct WorldSim commands or GT-driven targets bypass the shared runtime localization chain.",
+    "independent_cobot": "Independent Cobot controllers have a different pose/control integration and are outside this matrix.",
+    "sensor_or_host_only": "Sensor, display, reset, HTTP access and perception-only tests without a motion task are not motion success-rate cases.",
+    "localization_benchmarks": "Localization trajectory benchmarks score pose accuracy, not task success; their results remain separate."
+  },
+  "selectors": [
+    "tests/test_e2e.py::test_cup_to_table_end_to_end",
+    "tests/test_shuttle.py::test_shuttle_moves_objects_around_the_cycle",
+    "tests/test_chores.py::test_a_chair_is_carried_and_put_down_on_the_floor",
+    "tests/test_chores.py::test_picking_a_chair_by_the_wall_leaves_room_to_move_and_it_can_be_put_down_in_place",
+    "tests/test_chores.py::test_a_chair_blocking_the_sideboard_is_moved_out_of_the_way_before_the_drawer_swap",
+    "tests/test_chores.py::test_one_chores_round_is_confirmed_by_world_state",
+    "tests/test_puzzle.py::test_the_robot_takes_off_the_lid_and_pours_the_pieces_out_onto_the_table",
+    "tests/test_puzzle.py::test_pieces_dropped_behind_and_under_the_table_are_picked_off_the_floor_and_put_back",
+    "tests/test_phase.py::test_phase1_exploration_builds_an_accurate_ego_state_from_rgbd"
+  ]
+}
