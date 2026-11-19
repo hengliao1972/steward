@@ -148,6 +148,20 @@ def _validate_body(body: Any, where: str) -> list[str]:
         if link["id"] in link_ids:
             errors.append(f"{lw}: duplicate link id {link['id']!r}")
         link_ids.append(link["id"])
+        raw_inertial = link.get("inertial")
+        inertial = raw_inertial.get("value") if isinstance(raw_inertial, dict) else None
+        if raw_inertial is not None and not isinstance(inertial, dict):
+            errors.append(f"{lw}.inertial: expected an estimate containing inertia fields")
+        inertial = inertial if isinstance(inertial, dict) else {}
+        if "diagonal" in inertial:
+            if (not _finite_vector(inertial["diagonal"], 3) or any(v <= 0 for v in inertial["diagonal"])
+                    or not isinstance(inertial.get("mass"), (int, float)) or not math.isfinite(inertial["mass"])
+                    or inertial["mass"] <= 0 or not _is_pose(inertial.get("pose"))):
+                errors.append(f"{lw}.inertial: explicit inertia needs positive mass/diagonal and a valid pose")
+        if "diagonal" not in inertial and any(
+                isinstance(g, dict) and g.get("kind") == "mesh" for g in link.get("geometry", {}).get("collision", [])
+        ):
+            errors.append(f"{lw}.inertial: mesh collisions require explicit mass, pose and diagonal inertia")
         for role, geoms in link.get("geometry", {}).items():
             if role not in GEOMETRY_ROLES:
                 errors.append(f"{lw}.geometry: unknown role {role!r}")
@@ -214,6 +228,11 @@ def _check_geometry(g: Any, where: str) -> list[str]:
     elif not isinstance(g.get("ref"), str):
         errors.append(f"{where}: {kind} geometry needs a ref")
     return errors
+
+
+def _finite_vector(value: Any, size: int) -> bool:
+    return isinstance(value, list) and len(value) == size and all(
+        isinstance(x, (int, float)) and math.isfinite(x) for x in value)
 
 
 def _is_png_b64(v: Any) -> bool:

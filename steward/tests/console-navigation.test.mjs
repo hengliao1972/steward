@@ -1,4 +1,4 @@
-/** Camera input regressions use the shipped HTML handlers with a controlled frame clock. */
+/** Console regressions exercise the shipped camera handlers and label overlays. */
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
@@ -8,6 +8,38 @@ const html = readFileSync(new URL('../src/steward/world/console.html', import.me
 const cameraScript = html.slice(html.indexOf('function cameraFrame('), html.indexOf('function project('));
 const script = html.slice(html.indexOf('let viewPosting ='), html.indexOf('// ------------------------------------------------------------------ refresh'));
 assert.ok(script.includes('function postView()') && script.includes("vp.addEventListener('keydown'"));
+
+test('World and Ego labels name house objects even when their task role is unknown', () => {
+  const world = { labels: [], clearRect() {} }, ego = { labels: [], clearRect() {} };
+  const objects = ['table', 'sofa', 'bread'].map((category, i) => ({
+    id: `e:${i + 1}`, category, role: i === 0 ? 'unknown' : category,
+    center: [i * 2, 0, 0.5], size: [1, 1, 1], existence: 1,
+  }));
+  const groundTruth = objects.map(o => ({ ...o, id: `w:${o.category}`, role: 'object' }));
+  groundTruth.push({ id: 'w:floor/floor', category: 'floor', role: 'environment' });
+  const controls = {
+    ovWorld: { getContext: () => world }, ovEgo: { getContext: () => ego },
+    showGtLabels: { checked: true }, showEgoLabels: { checked: true },
+    showSigma: { checked: false }, showError: { checked: false },
+  };
+  const context = vm.createContext({
+    $: id => controls[id], state: { loaded: true, groundTruth, robots: { robot: { ego: { objects } } } },
+    robotId: 'robot', panes: { world: { rendered: {} }, ego: { rendered: {} } },
+    cameraFrame: camera => camera,
+    painter: ctx => ({ text: (_point, text) => ctx.labels.push(text), flush() {} }),
+  });
+  vm.runInContext(html.slice(html.indexOf('const NAMES ='), html.indexOf('const RENDER_W ='))
+    + html.slice(html.indexOf('const label ='), html.indexOf('// ------------------------------------------------------------------ renders')),
+  context);
+  vm.runInContext('drawOverlays()', context);
+  const expected = JSON.parse(readFileSync(new URL('expected/console-labels.json', import.meta.url), 'utf8'));
+  assert.deepEqual({ world: world.labels, ego: ego.labels }, expected);
+  const scene = JSON.parse(readFileSync(new URL('../src/steward/assets/merom_house/scene.json', import.meta.url), 'utf8'));
+  for (const entity of scene.entities) {
+    context.category = entity.category.value;
+    assert.ok(vm.runInContext('NAMES[category]', context), `missing label for ${entity.category.value}`);
+  }
+});
 
 function harness(t, { azimuth = 90, fps = 10, api } = {}) {
   let now = 0, nextFrame = 0;

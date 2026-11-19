@@ -1,0 +1,17 @@
+{
+  "name": "merom-house",
+  "scene": "merom-house",
+  "robots": ["w:robot-1"],
+  "task": "",
+  "phase": "phase0",
+  "view": {
+    "lookat": [
+      0.925,
+      3.325,
+      1.05
+    ],
+    "distance": 24.5,
+    "azimuth": 90,
+    "elevation": -90
+  }
+}

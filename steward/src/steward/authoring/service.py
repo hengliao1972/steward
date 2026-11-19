@@ -24,6 +24,7 @@ from steward.assets.generators import GENERATORS
 from steward.assets.library import AssetLibrary, instantiate
 from steward.assets.preview import render_scene, render_template
 from steward.assets.validator import validate_template
+from steward.authoring.merom import build_merom_house, merom_house_spec
 from steward.embodiments import EMBODIMENTS, describe, scenario_embodiments
 from steward.math3d import pose_compose, quat_from_yaw, yaw_from_quat
 from steward.scene.extent import entity_obb
@@ -1184,6 +1185,7 @@ def build_screw_board(service: AuthoringService) -> dict:
 # them before they exist in a root. ``build`` may write several scenarios at once (the kitchen
 # builder saves all three Phase 0 scenarios), so the table names each one it produces.
 BUILTIN_SCENARIOS: dict[str, dict] = {
+    "merom-house": {"build": build_merom_house, "spec": merom_house_spec, "task": ""},
     "phase0-kitchen": {"build": build_default_kitchen, "spec": kitchen_spec, "task": KITCHEN_TASK},
     "phase0-shuttle": {"build": build_default_kitchen, "spec": shuttle_spec, "task": SHUTTLE_TASK},
     "phase0-chores": {"build": build_default_kitchen, "spec": chores_spec, "task": CHORES_TASK},

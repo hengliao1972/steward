@@ -42,6 +42,24 @@ AgileX 在停靠成功前保持机械臂姿态。放置规划检查目标腕姿�
 
 传入 `--misnames-config ''` 会禁用名称映射。缺少映射时切换到 `phase0-misnamed` 会被拒绝，当前世界和后续 Episode 保留原感知级别。
 
+## Merom 全屋场景
+
+`merom-house` 加载随包提供的 `phyagentos_assets_new` 优化版全屋布局。环境使用米和 Z 轴向上坐标，包含 132 个固定实体和 1,163 个独立碰撞部件：105 个物体、15 段墙和 12 块地板。物体类别标明家具和物品种类；所有导入刚体保持固定。Cobot Magic 机器人从客厅 `(1.7, 7.2, 0)` m 处开始，朝向沙发一侧的 +Y 方向。计入踢脚线后，10 处门洞的净宽为 0.99–1.61 m。感知系统分别识别门洞两侧的墙段和上方的门楣，导航地图保留通行开口。不需要原始 USD 文件或 USD 解码器。
+
+安装后，在本目录运行：
+
+```sh
+.venv/bin/steward --root var/merom-wide-doors up --scenario merom-house --phase phase0 --freeze-idle --wca-port 7460 --robot-port 0 --api-port 0 --no-dispatch-task --segmentation-config '' --world-harness '' --robot-harness ''
+```
+
+打开输出的控制台地址。场景也会出现在控制台场景选择器中，首次加载时安装。网格解压到指定数据目录；后续加载会保留已有场景编辑。[资产清单](src/steward/assets/merom_house/manifest.json)记录源文件哈希、坐标约定和几何数量。资产包保留优化后的工作台、桌下开放空间、分块碰撞代理和金黄色吐司。
+
+在控制台本体选择框中选择 Cobot Magic 或 Steward，选择 `merom-house` 并点击**加载**，即可让对应本体从客厅位置开始。命令行对应参数为 `--body cobot-magic` 或 `--body steward-bot`。切换本体会开启新 Episode。已有数据目录保留保存的场景，包括旧的不含机器人或未标注语义的副本；上述命令使用独立目录安装当前资产包。
+
+`up` 启动 Ego Runtime，将其感知报告和视图接入控制台。每个 Episode 的首个成功感知结果立即上报，启用 `--freeze-idle` 时也如此；后续报告保持配置的周期，空闲等待不会触发动作的 60 秒超时。勾选预览下方的 **World：物体标签** 和 **Ego：物体标签** 即可显示类别名称。任务角色未知时仍显示感知类别。Phase 0 提供理想检测；召回率以全屋 105 个物体为分母，包括相机视野外的其他房间。这些指标不代表学习式视觉模型的识别准确率。
+
+本地网格几何在视觉或碰撞列表中使用 `kind: "mesh"` 和文件 `ref`。碰撞网格要求 `link.inertial.value` 提供正数 `mass`、三个正数 `diagonal` 惯性矩和 `pose`；视觉网格不参与碰撞，也不增加质量。
+
 ## 与 DeepSeek Harness 一起运行
 
 ```sh

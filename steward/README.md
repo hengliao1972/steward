@@ -42,6 +42,24 @@ AgileX preserves its arm posture until docking succeeds. Placement checks the re
 
 Passing `--misnames-config ''` disables name mappings. A switch to `phase0-misnamed` without a mapping is rejected, and the running world and later episodes retain the previous phase.
 
+## Merom house
+
+`merom-house` loads the bundled, optimized full-house layout from `phyagentos_assets_new`. Its environment uses metres and Z-up, with 132 fixed entities and 1,163 separate collision pieces: 105 objects, 15 walls and 12 floor sections. Object categories describe the furniture and contents; all imported bodies remain fixed. A Cobot Magic robot starts in the living room at `(1.7, 7.2, 0)` m, facing +Y toward the sofa. The ten doorways have 0.99–1.61 m of clear width, including baseboards. Wall sections and the lintel above each doorway are perceived separately so the navigation map preserves the opening. Original USD files and a USD decoder are not required.
+
+From this directory after installation:
+
+```sh
+.venv/bin/steward --root var/merom-wide-doors up --scenario merom-house --phase phase0 --freeze-idle --wca-port 7460 --robot-port 0 --api-port 0 --no-dispatch-task --segmentation-config '' --world-harness '' --robot-harness ''
+```
+
+Open the printed console URL. The scene also appears in the console scenario selector and is installed on first load. Meshes are extracted into the selected data root; existing scene edits are retained on subsequent loads. The [asset manifest](src/steward/assets/merom_house/manifest.json) records the source hashes, coordinate convention and geometry counts. The bundle retains the optimized worktable, open space beneath it, separate collision proxies and golden toast colors.
+
+Choose Cobot Magic or Steward in the console body selector, select `merom-house`, and click **Load** to start that body at the living-room position. The CLI equivalent is `--body cobot-magic` or `--body steward-bot`. Switching bodies starts a new episode. Existing data roots retain their saved scene, including older robot-free or unlabelled copies; the command above uses a separate root to install the current bundle.
+
+`up` starts the Ego Runtime and connects its perception reports and view to the console. Each episode's first successful perception update is reported immediately, including with `--freeze-idle`; later reports follow the configured cadence, and idle waits do not trigger the 60-second motion timeout. Enable **World: object labels** and **Ego: object labels** below the previews to show category names. An unknown task role leaves the perceived category visible. Phase 0 provides ideal detections; recall counts matched objects against all 105 house objects, including rooms outside the cameras' view. These metrics do not measure a learned vision model's accuracy.
+
+Local mesh geometry uses `kind: "mesh"` and a file `ref` in either the visual or collision list. Collision meshes require `link.inertial.value` with positive `mass`, three positive `diagonal` moments and a `pose`; visual meshes remain non-colliding and massless.
+
 ## Run with DeepSeek Harness
 
 ```sh
